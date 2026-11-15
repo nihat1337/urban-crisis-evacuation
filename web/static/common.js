@@ -8,7 +8,9 @@ let LANG = localStorage.getItem('lang') || document.documentElement.lang || 'az'
 
 /* ---- theme: follows the OS (prefers-color-scheme) unless the user picks one ---- */
 const THEME_KEY = 'theme'; // system | light | dark
-const themePref = () => { try { return localStorage.getItem(THEME_KEY) || 'system'; } catch (_) { return 'system'; } };
+// Default when the user hasn't picked one: Citizen opens light, Dispatcher opens dark.
+const defaultTheme = () => document.body.classList.contains('dispatch-page') ? 'dark' : 'light';
+const themePref = () => { try { return localStorage.getItem(THEME_KEY) || defaultTheme(); } catch (_) { return defaultTheme(); } };
 const resolvedLight = (pref = themePref()) => pref === 'light' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
 function applyTheme() {
   document.body.classList.toggle('light', resolvedLight());
