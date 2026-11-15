@@ -16,10 +16,26 @@
     <a href="/dispatcher" class="active" data-i18n="dispatcher">Dispeçer</a>
   </nav>
   <div class="spacer"></div>
-  <input id="key" type="password" data-i18n-ph="api_key" placeholder="Dispeçer açarı" style="width:170px">
+  <div id="user" class="user" hidden>
+    <span class="chip">🛡️ <span data-i18n="dispatcher">Dispeçer</span></span>
+    <button id="logout" class="btn small" data-i18n-title="logout">⎋ <span data-i18n="logout">Çıxış</span></button>
+  </div>
   <span id="live" class="live"><span class="dot"></span><span class="txt">…</span></span>
   <select id="lang" title="Language"></select>
 </header>
+
+<!-- Login gate: shown until a valid dispatcher key is verified by the server -->
+<div id="login" class="overlay">
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="login-logo">🚨</div>
+    <h2 data-i18n="login_title">Dispeçer girişi</h2>
+    <p class="hint" data-i18n="login_hint">Fövqəladə Hallar dispeçer paneli. Giriş üçün xidməti açarınızı daxil edin.</p>
+    <input id="key" type="password" name="dispatcher-key" autocomplete="current-password" data-i18n-ph="api_key" placeholder="Dispeçer açarı" required autofocus>
+    <button class="btn primary" type="submit"><span data-i18n="login">Daxil ol</span></button>
+    <p id="login-error" class="hint" style="color:var(--red);min-height:1.2em"></p>
+    <a href="/" class="hint" data-i18n="back_citizen">← Vətəndaş tətbiqinə qayıt</a>
+  </form>
+</div>
 
 <main class="layout">
   <div id="map"></div>
@@ -77,21 +93,59 @@
   const map = await makeMap('map');
   const layers = { roads: L.layerGroup().addTo(map), shelters: L.layerGroup().addTo(map), sos: L.layerGroup().addTo(map), brigades: L.layerGroup().addTo(map), alerts: L.layerGroup().addTo(map) };
   let ov = null;
-  const keyInput = $('#key');
-  keyInput.value = localStorage.getItem('dispatcherKey') || 'dispatcher-secret';
-  localStorage.setItem('dispatcherKey', keyInput.value);
-  keyInput.onchange = () => { localStorage.setItem('dispatcherKey', keyInput.value); load(); };
+  // --- authentication gate -------------------------------------------------
+  const loginBox = $('#login'), loginForm = $('#login-form'), keyInput = $('#key'), loginErr = $('#login-error');
+  let authed = false;
+  function showLogin(msg = '') {
+    authed = false;
+    localStorage.removeItem('dispatcherKey');
+    $('#user').hidden = true;
+    loginErr.textContent = msg;
+    loginBox.hidden = false;
+    document.body.classList.add('locked');
+    setTimeout(() => keyInput.focus(), 50);
+  }
+  function showApp() {
+    authed = true;
+    loginBox.hidden = true;
+    document.body.classList.remove('locked');
+    $('#user').hidden = false;
+  }
+  // Validate the key against the server (401 → stays on the login screen).
+  async function tryLogin(key) {
+    if (!key) return false;
+    try {
+      await api('/dispatch/session', { key });
+      localStorage.setItem('dispatcherKey', key);
+      showApp();
+      return true;
+    } catch (e) {
+      if (e.status === 401) return false;
+      toast(e.message, 'error');
+      return false;
+    }
+  }
+  loginForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = loginForm.querySelector('button'); btn.disabled = true;
+    const ok = await tryLogin(keyInput.value.trim());
+    btn.disabled = false;
+    if (ok) { keyInput.value = ''; await load(); }
+    else { loginErr.textContent = t('login_failed'); keyInput.select(); }
+  };
+  $('#logout').onclick = () => showLogin();
 
   const ROAD_COLOR = { open: '#22c55e', congested: '#eab308', blocked: '#ef4444' };
   const NEXT_ROAD = { open: 'blocked', blocked: 'congested', congested: 'open' };
   const BR_CLASS = { available: 'green', en_route: 'blue', busy: 'orange' };
 
   async function load() {
+    if (!authed) return;
     try {
       ov = await api('/dispatch/overview');
       render();
     } catch (e) {
-      if (e.status === 401) toast(t('unauthorized'), 'error'); else toast(e.message, 'error');
+      if (e.status === 401) showLogin(t('unauthorized')); else toast(e.message, 'error');
     }
   }
   const reload = debounce(load, 250);
@@ -268,7 +322,10 @@
   }, setLive);
 
   document.addEventListener('langchange', render);
-  await load();
+
+  // Resume a previous session if its key is still valid, otherwise ask to log in.
+  if (await tryLogin(localStorage.getItem('dispatcherKey'))) await load();
+  else showLogin();
 })();
 </script>
 </body>

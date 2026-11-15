@@ -61,6 +61,7 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 	mux.Handle("GET /api/v1/events", hub)
 
 	// Module 2 — dispatcher (protected)
+	mux.Handle("GET /api/v1/dispatch/session", s.requireKey(s.session))
 	mux.Handle("GET /api/v1/dispatch/overview", s.requireKey(s.overview))
 	mux.Handle("GET /api/v1/dispatch/sos", s.requireKey(s.listSOS))
 	mux.Handle("POST /api/v1/dispatch/sos/{id}/resolve", s.requireKey(s.resolveSOS))
@@ -285,6 +286,12 @@ func (s *Server) citizenStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- dispatcher handlers ---
+
+// session lets the dispatcher UI validate a key at login without pulling the
+// whole overview. requireKey already rejected bad keys with 401.
+func (s *Server) session(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"role": "dispatcher", "authenticated": true, "time": time.Now().UTC()})
+}
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	ov, err := s.svc.Overview(r.Context())

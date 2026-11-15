@@ -93,6 +93,22 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
 
+/* dispatcher login gate */
+.user { display: flex; align-items: center; gap: 8px; }
+.user .chip { font-size: 13px; padding: 6px 10px; border-radius: 999px; background: rgba(59,130,246,.15); color: #93c5fd; border: 1px solid rgba(59,130,246,.3); }
+.overlay { position: fixed; inset: 0; z-index: 1500; display: grid; place-items: center; padding: 16px;
+  background: rgba(11,18,32,.72); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.overlay[hidden] { display: none; }
+body.locked aside.panel { filter: blur(3px); pointer-events: none; user-select: none; }
+.login-card { width: min(380px, 100%); background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 28px 26px;
+  display: flex; flex-direction: column; gap: 12px; box-shadow: 0 30px 80px rgba(0,0,0,.6); text-align: center; }
+.login-card h2 { margin: 0; font-size: 20px; }
+.login-card .login-logo { width: 56px; height: 56px; margin: 0 auto 4px; border-radius: 16px; display: grid; place-items: center; font-size: 28px;
+  background: linear-gradient(135deg, var(--red), var(--orange)); box-shadow: 0 10px 30px rgba(239,68,68,.35); }
+.login-card input { width: 100%; padding: 11px 12px; font-size: 15px; text-align: center; letter-spacing: 2px; }
+.login-card .btn.primary { justify-content: center; padding: 11px; font-weight: 600; }
+.login-card a.hint { color: var(--muted); }
+
 #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 2000; max-width: 360px; }
 .toast { background: #1c2946; border: 1px solid var(--border); border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 10px; font-size: 13px; box-shadow: 0 10px 30px rgba(0,0,0,.4); animation: slide .2s ease-out; }
 .toast.ok { border-left-color: var(--green); }
