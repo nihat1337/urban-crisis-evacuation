@@ -99,6 +99,39 @@ function timeAgo(iso) {
 const SOS_ICON = { fire: '🔥', collapse: '🏚️', flood: '🌊', medical: '🚑' };
 const SHELTER_ICON = { shelter: '🛡️', park: '🌳', stadium: '🏟️', temporary: '⛺' };
 
+// Line icons (inline SVG) used by the redesigned UI. Emoji above stay for
+// plain-text toasts; HTML views use icon(name, size).
+const ICON_PATHS = {
+  fire: '<path d="M12 3c1 3 4.5 4.6 4.5 9.2a4.5 4.5 0 0 1-9 0c0-2.2 1.1-3.4 2.2-4.4 0 2 1 3 2.1 3.1C11.8 8 11 6 12 3z"/>',
+  collapse: '<path d="M3 21h18"/><path d="M5 21V8l6-4v6"/><path d="M14 21v-7l5 2v5"/><path d="M11 13l-2 3 2 2-1 3"/>',
+  flood: '<path d="M3 9c2 0 2-2 4.5-2S10 9 12 9s2-2 4.5-2S19 9 21 9"/><path d="M3 15c2 0 2-2 4.5-2s2.5 2 4.5 2 2-2 4.5-2 2.5 2 4.5 2"/>',
+  medical: '<path d="M9.5 3.5h5v6h6v5h-6v6h-5v-6h-6v-5h6z"/>',
+  wheelchair: '<circle cx="11" cy="4" r="1.6"/><path d="M11 7v6h5l2.5 5.5"/><path d="M11 10h5"/><path d="M8 11.3A5 5 0 1 0 14.6 18"/>',
+  shield: '<path d="M12 2.8l7.5 2.8v5.9c0 4.7-3.2 8.2-7.5 9.7-4.3-1.5-7.5-5-7.5-9.7V5.6z"/><path d="M8.2 12h7.6"/><path d="M12.8 9l3 3-3 3"/>',
+  bunker: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  park: '<path d="M12 3l5 7h-3l4 6H6l4-6H7z"/><path d="M12 16v5"/>',
+  stadium: '<ellipse cx="12" cy="12" rx="9" ry="6"/><ellipse cx="12" cy="12" rx="4" ry="2.5"/>',
+  tent: '<path d="M3 20L12 4l9 16z"/><path d="M12 20v-6"/>',
+  truck: '<path d="M3 16V8h11v8M14 11h4l3 3v2h-7"/><circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  gps: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
+  road: '<path d="M4 8h16v4H4z"/><path d="M6 12v7M18 12v7"/>',
+  chevron: '<path d="M9 6l6 6-6 6"/>',
+  ruler: '<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/>',
+  sos: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5h.01"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>',
+  phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+  logout: '<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4M6 12h10"/>',
+};
+const SHELTER_ICON_NAME = { shelter: 'bunker', park: 'park', stadium: 'stadium', temporary: 'tent' };
+function icon(name, size = 18) {
+  const p = ICON_PATHS[name];
+  return p ? `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>` : '';
+}
+
 function debounce(fn, ms) {
   let tm; return (...a) => { clearTimeout(tm); tm = setTimeout(() => fn(...a), ms); };
 }
@@ -138,7 +171,7 @@ const GOOGLE_NIGHT_STYLE = [
 // when the server has a Google Maps key, otherwise OpenStreetMap. All markers,
 // routes and click handlers are Leaflet, so the provider swap is invisible to
 // the rest of the app — and any Google failure falls back to OSM.
-async function makeMap(id) {
+async function makeMap(id, { light = false } = {}) {
   const map = L.map(id, { zoomControl: true }).setView([40.40, 49.86], 12);
   let cfg = {};
   try { cfg = await (await fetch(`${API}/config`)).json(); } catch (_) { /* offline */ }
@@ -148,7 +181,7 @@ async function makeMap(id) {
       await loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(cfg.google_maps_key)}&v=weekly&language=${LANG}&callback=__gmapsReady`);
       await ready;
       await loadScript('https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.1/dist/Leaflet.GoogleMutant.js');
-      const google = L.gridLayer.googleMutant({ type: 'roadmap', styles: GOOGLE_NIGHT_STYLE, maxZoom: 20 });
+      const google = L.gridLayer.googleMutant({ type: 'roadmap', styles: light ? [] : GOOGLE_NIGHT_STYLE, maxZoom: 20 });
       const satellite = L.gridLayer.googleMutant({ type: 'hybrid', maxZoom: 20 });
       google.addTo(map);
       L.control.layers({ 'Google': google, 'Google Satellite': satellite }, null, { position: 'bottomleft', collapsed: true }).addTo(map);
@@ -161,7 +194,7 @@ async function makeMap(id) {
   // Plain OSM tiles need no API key; the dark look comes from a CSS filter (.dark-tiles).
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
-    className: 'dark-tiles',
+    className: light ? '' : 'dark-tiles',
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(map);
   map.provider = 'osm';

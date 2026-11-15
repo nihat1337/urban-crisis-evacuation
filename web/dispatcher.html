@@ -6,28 +6,30 @@
   <title>Dispeçer — Şəhər Təhlükəsizlik Şəbəkəsi</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9A%A8%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap">
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body class="dispatch-page">
 <header class="top">
-  <div class="brand"><span class="logo">🚨</span><span data-i18n="app_title">Şəhər Təhlükəsizlik Şəbəkəsi</span></div>
+  <div class="brand"><span class="logo"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l7.5 2.8v5.9c0 4.7-3.2 8.2-7.5 9.7-4.3-1.5-7.5-5-7.5-9.7V5.6z"/><path d="M8.2 12h7.6"/><path d="M12.8 9l3 3-3 3"/></svg></span><span class="name"><span data-i18n="app_title">Şəhər Təhlükəsizlik Şəbəkəsi</span><small data-i18n="dispatcher">Dispeçer</small></span></div>
   <nav>
     <a href="/" data-i18n="citizen">Vətəndaş</a>
     <a href="/dispatcher" class="active" data-i18n="dispatcher">Dispeçer</a>
   </nav>
   <div class="spacer"></div>
   <div id="user" class="user" hidden>
-    <span class="chip">🛡️ <span data-i18n="dispatcher">Dispeçer</span></span>
-    <button id="logout" class="btn small" data-i18n-title="logout">⎋ <span data-i18n="logout">Çıxış</span></button>
+    <span class="chip"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg><span data-i18n="dispatcher">Dispeçer</span></span>
+    <button id="logout" class="btn small ghost" data-i18n-title="logout"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4M6 12h10"/></svg><span data-i18n="logout">Çıxış</span></button>
   </div>
   <span id="live" class="live"><span class="dot"></span><span class="txt">…</span></span>
-  <select id="lang" title="Language"></select>
+  <select id="lang" title="Language" aria-label="Language"></select>
 </header>
 
 <!-- Login gate: shown until a valid dispatcher key is verified by the server -->
 <div id="login" class="overlay">
   <form id="login-form" class="login-card" autocomplete="on">
-    <div class="login-logo">🚨</div>
+    <div class="login-logo"><svg class="ico" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l7.5 2.8v5.9c0 4.7-3.2 8.2-7.5 9.7-4.3-1.5-7.5-5-7.5-9.7V5.6z"/><path d="M8.2 12h7.6"/><path d="M12.8 9l3 3-3 3"/></svg></div>
     <h2 data-i18n="login_title">Dispeçer girişi</h2>
     <p class="hint" data-i18n="login_hint">Fövqəladə Hallar dispeçer paneli. Giriş üçün xidməti açarınızı daxil edin.</p>
     <input id="key" type="password" name="dispatcher-key" autocomplete="current-password" data-i18n-ph="api_key" placeholder="Dispeçer açarı" required autofocus>
@@ -37,14 +39,23 @@
   </form>
 </div>
 
-<main class="layout">
-  <div id="map"></div>
-  <aside class="panel">
-    <section class="card">
-      <h3><span data-i18n="alerts">Həyəcan siqnalları</span><span id="alert-count" class="badge red"></span></h3>
-      <div id="alerts" class="list"></div>
-    </section>
+<main class="layout dispatch">
+  <!-- Left: what needs a decision now -->
+  <section class="col queue">
+    <h3 class="section"><span data-i18n="alerts">Həyəcan siqnalları</span><span id="alert-count" class="badge red"></span></h3>
+    <div id="alerts" class="list"></div>
+    <h3 class="section" style="margin-top:6px"><span data-i18n="sos_signals">SOS siqnalları</span><span id="sos-count" class="badge"></span></h3>
+    <div id="sos" class="list"></div>
+  </section>
 
+  <!-- Centre: map + live numbers -->
+  <div class="map-wrap">
+    <div id="map"></div>
+    <div id="kpis" class="kpis"></div>
+  </div>
+
+  <!-- Right: resources -->
+  <section class="col resources">
     <section class="card">
       <h3 data-i18n="zones">Zonalar</h3>
       <table id="zones"><thead><tr>
@@ -53,14 +64,8 @@
     </section>
 
     <section class="card">
-      <h3 data-i18n="simulate">Simulyasiya</h3>
-      <div class="row">
-        <select id="sim-zone"></select>
-        <button id="sim" class="btn danger small">🧪 <span data-i18n="simulate_cluster">4 SOS göndər (böhran testi)</span></button>
-        <button id="sim-prio" class="btn warn small">♿ <span data-i18n="priority_sos">Prioritet SOS</span></button>
-      </div>
-      <p class="hint" data-i18n="simulate_hint"></p>
-      <p class="hint" data-i18n="click_road_hint"></p>
+      <h3 data-i18n="brigades">Xilasetmə briqadaları</h3>
+      <div id="brigades" class="list"></div>
     </section>
 
     <section class="card">
@@ -68,14 +73,15 @@
       <div id="shelters" class="list"></div>
     </section>
 
-    <section class="card">
-      <h3 data-i18n="brigades">Xilasetmə briqadaları</h3>
-      <div id="brigades" class="list"></div>
-    </section>
-
-    <section class="card">
-      <h3><span data-i18n="sos_signals">SOS siqnalları</span><span id="sos-count" class="badge"></span></h3>
-      <div id="sos" class="list"></div>
+    <section class="card test">
+      <h3 data-i18n="simulate">Simulyasiya</h3>
+      <select id="sim-zone" aria-label="Zone"></select>
+      <div class="list">
+        <button id="sim" class="btn danger small"><span data-i18n="simulate_cluster">4 SOS göndər (böhran testi)</span></button>
+        <button id="sim-prio" class="btn warn small"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="4" r="1.6"/><path d="M11 7v6h5l2.5 5.5"/><path d="M11 10h5"/><path d="M8 11.3A5 5 0 1 0 14.6 18"/></svg><span data-i18n="priority_sos">Prioritet SOS</span></button>
+      </div>
+      <p class="hint" data-i18n="simulate_hint"></p>
+      <p class="hint" data-i18n="click_road_hint"></p>
     </section>
 
     <section class="card">
@@ -87,7 +93,7 @@
       <h3 data-i18n="overview">Sistem</h3>
       <dl class="kv" id="sys"></dl>
     </section>
-  </aside>
+  </section>
 </main>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -140,7 +146,7 @@
   };
   $('#logout').onclick = () => showLogin();
 
-  const ROAD_COLOR = { open: '#22c55e', congested: '#eab308', blocked: '#ef4444' };
+  const ROAD_COLOR = { open: '#34d399', congested: '#ffb547', blocked: '#ff5a5f' };
   const NEXT_ROAD = { open: 'blocked', blocked: 'congested', congested: 'open' };
   const BR_CLASS = { available: 'green', en_route: 'blue', busy: 'orange' };
 
@@ -168,9 +174,9 @@
       const el = document.createElement('div');
       el.className = 'alert' + (a.executed ? ' done' : '');
       const actions = a.executed
-        ? `<span class="badge green">✓ ${esc(t('executed'))}: ${esc(t(a.executed_action))}</span>`
-        : a.suggested_actions.map(ac => `<button class="btn small ${ac === 'dispatch_brigade' ? 'danger' : 'warn'}" data-exec="${a.id}" data-action="${ac}">${ac === 'dispatch_brigade' ? '🚒' : '⛺'} ${esc(t(ac))}</button>`).join('');
-      el.innerHTML = `<div class="msg">🔴 ${esc(a.message)}</div>
+        ? `<span class="badge green">${icon('check', 13)} ${esc(t('executed'))}: ${esc(t(a.executed_action))}</span>`
+        : a.suggested_actions.map(ac => `<button class="btn ${ac === 'dispatch_brigade' ? 'danger' : 'warn'}" data-exec="${a.id}" data-action="${ac}">${icon(ac === 'dispatch_brigade' ? 'truck' : 'tent', 17)} ${esc(t(ac))}</button>`).join('');
+      el.innerHTML = `<div class="msg">${esc(a.message)}</div>
         <div class="meta hint">${esc(zoneName(a.zone_id))} · ${timeAgo(a.created_at)}</div>
         <div class="actions">${actions}</div>`;
       box.appendChild(el);
@@ -190,8 +196,9 @@
     ov.zones.forEach(z => {
       const tr = document.createElement('tr');
       const hot = z.recent_sos >= (ov.crisis.min_signals || 4);
-      const crit = z.critical_sos ? ` <span class="badge red" title="${esc(t('priority_critical'))}">♿ ${z.critical_sos}</span>` : '';
-      tr.innerHTML = `<td>${hot ? '🔴 ' : ''}${esc(z.name)}</td><td class="num">${z.open_sos}${crit}</td><td class="num">${z.recent_sos}</td><td class="num" style="color:${pctColor(z.avg_occupancy_pct)}">${z.avg_occupancy_pct}%</td>`;
+      const crit = z.critical_sos ? ` <span class="badge orange" title="${esc(t('priority_critical'))}">${icon('wheelchair', 12)}${z.critical_sos}</span>` : '';
+      if (hot) tr.className = 'hot';
+      tr.innerHTML = `<td>${esc(z.name)}</td><td class="num">${z.open_sos}${crit}</td><td class="num">${z.recent_sos}</td><td class="num" style="color:${pctColor(z.avg_occupancy_pct)}">${z.avg_occupancy_pct}%</td>`;
       tr.style.cursor = 'pointer'; tr.onclick = () => map.setView([z.center.lat, z.center.lng], 14);
       tb.appendChild(tr);
     });
@@ -203,9 +210,9 @@
     ov.shelters.forEach(sh => {
       const pct = sh.capacity ? Math.round(sh.occupancy / sh.capacity * 1000) / 10 : 100, col = pctColor(pct);
       const el = document.createElement('div'); el.className = 'item';
-      const acc = sh.accessible ? `<span class="badge green" title="${esc(t('accessible'))}">♿</span>` : `<span class="badge" title="${esc(t('not_accessible'))}">🚫♿</span>`;
-      el.innerHTML = `<div class="title"><span>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)} ${acc}</span><span class="badge" style="color:${col}">${pct}%</span></div>
-        <div class="meta"><span>${esc(zoneName(sh.zone_id))}</span><span>${sh.occupancy} / ${sh.capacity}</span>${sh.active ? '' : '<span class="badge red">off</span>'}</div>
+      const acc = sh.accessible ? `<span class="badge green" title="${esc(t('accessible'))}">${icon('wheelchair', 12)}</span>` : '';
+      el.innerHTML = `<div class="title"><span>${esc(sh.name)} ${acc}</span><span class="pct" style="--c:${col}">${pct}%</span></div>
+        <div class="meta"><span>${esc(zoneName(sh.zone_id))}</span><span class="mono">${sh.occupancy} / ${sh.capacity}</span>${sh.accessible ? '' : `<span>${esc(t('not_accessible'))}</span>`}${sh.active ? '' : '<span class="badge red">off</span>'}</div>
         <input type="range" min="0" max="${sh.capacity}" value="${sh.occupancy}" data-shelter="${sh.id}" title="${esc(t('set_occupancy'))}">
         <div class="bar"><div style="width:${Math.min(100, pct)}%;background:${col}"></div></div>`;
       sl.appendChild(el);
@@ -222,15 +229,16 @@
     const bl = $('#brigades'); bl.innerHTML = '';
     ov.brigades.forEach(b => {
       const el = document.createElement('div'); el.className = 'item';
-      el.innerHTML = `<div class="title"><span>🚒 ${esc(b.name)}</span>
-        <select data-brigade="${b.id}" class="badge ${BR_CLASS[b.status]}" style="border:0">
-          ${['available', 'en_route', 'busy'].map(s => `<option value="${s}" ${s === b.status ? 'selected' : ''}>${esc(t('br_' + s))}</option>`).join('')}
-        </select></div>
-        <div class="meta"><span>${esc(zoneName(b.zone_id))}</span>${b.assigned_sos_id ? `<span>SOS #${esc(b.assigned_sos_id)}</span>` : ''}</div>`;
+      el.style.cursor = 'default';
+      // One-click status switch (same PATCH as the old dropdown).
+      el.innerHTML = `<div class="title"><span>${icon('truck', 16)} ${esc(b.name)}</span></div>
+        <div class="meta"><span>${esc(zoneName(b.zone_id))}</span>${b.assigned_sos_id ? `<span>SOS #${esc(b.assigned_sos_id)}</span>` : ''}</div>
+        <div class="br-seg">${['available', 'en_route', 'busy'].map(st => `<button type="button" data-brigade="${b.id}" data-status="${st}" class="${st === b.status ? 'on' : ''}" aria-pressed="${st === b.status}">${esc(t('br_' + st))}</button>`).join('')}</div>`;
       bl.appendChild(el);
     });
-    $$('[data-brigade]').forEach(s => s.onchange = async () => {
-      try { await api(`/dispatch/brigades/${s.dataset.brigade}`, { method: 'PATCH', body: { status: s.value } }); load(); }
+    $$('[data-brigade]').forEach(s => s.onclick = async () => {
+      if (s.classList.contains('on')) return;
+      try { await api(`/dispatch/brigades/${s.dataset.brigade}`, { method: 'PATCH', body: { status: s.dataset.status } }); load(); }
       catch (e) { toast(e.message, 'error'); }
     });
 
@@ -238,18 +246,26 @@
     const openSOS = ov.sos.filter(s => s.status !== 'resolved');
     $('#sos-count').textContent = openSOS.length;
     const so = $('#sos'); so.innerHTML = '';
-    ov.sos.slice(0, 40).forEach(s => {
+    // Display order only: open critical (#1) first, then open, then resolved.
+    const rank = (x) => x.status === 'resolved' ? 2 : (x.priority === 1 ? 0 : 1);
+    [...ov.sos].sort((a, b) => rank(a) - rank(b)).slice(0, 40).forEach(s => {
       const critical = s.priority === 1;
-      const el = document.createElement('div'); el.className = 'item' + (critical && s.status !== 'resolved' ? ' critical' : ''); if (s.status === 'resolved') el.style.opacity = .5;
-      const prioBadge = critical ? `<span class="badge red">♿ ${esc(t('priority_critical'))}</span>` : '';
+      const el = document.createElement('div'); el.className = 'item sos-item' + (critical && s.status !== 'resolved' ? ' critical' : ''); if (s.status === 'resolved') el.style.opacity = .5;
+      const prioBadge = critical ? `<span class="badge orange">${icon('wheelchair', 12)} ${esc(t('priority_critical'))}</span>` : '';
       const who = s.citizen_phone
-        ? `<span>👤 ${esc(s.citizen_name || s.citizen_id)}</span><a class="badge green" href="tel:${esc(s.citizen_phone)}" title="${esc(t('call'))}">📞 ${esc(s.citizen_phone)}</a>${s.citizen_email ? `<a class="badge" href="mailto:${esc(s.citizen_email)}">✉️</a>` : ''}`
-        : `<span class="badge orange">${esc(t('anonymous'))} · ${esc(s.citizen_id)}</span>`;
-      el.innerHTML = `<div class="title"><span>${SOS_ICON[s.type] || '🆘'} ${esc(t('sos_' + s.type))} ${prioBadge} <span class="badge">${esc(s.status)}</span></span>
-        <span class="row" style="gap:4px">${s.citizen_phone && s.status !== 'resolved' ? `<button class="btn small" data-notify="${s.id}" title="${esc(t('send_sms'))}">💬</button>` : ''}
-        ${s.status !== 'resolved' ? `<button class="btn small ok" data-resolve="${s.id}">✓ ${esc(t('resolve'))}</button>` : ''}</span></div>
-        <div class="meta">${who}</div>
-        <div class="meta"><span>${esc(zoneName(s.zone_id))}</span><span>${timeAgo(s.created_at)}</span>${s.brigade_id ? `<span>🚒 ${esc(s.brigade_id)}</span>` : ''}</div>`;
+        ? `<span>${esc(s.citizen_name || s.citizen_id)}</span><a class="badge green" href="tel:${esc(s.citizen_phone)}" title="${esc(t('call'))}">${icon('phone', 12)} ${esc(s.citizen_phone)}</a>${s.citizen_email ? `<a class="badge" href="mailto:${esc(s.citizen_email)}" title="${esc(s.citizen_email)}">${icon('mail', 12)}</a>` : ''}`
+        : `<span>${esc(t('anonymous'))} · <span class="mono">${esc(s.citizen_id)}</span></span>`;
+      const open_ = s.status !== 'resolved';
+      el.innerHTML = `<span class="tile">${icon(critical ? 'wheelchair' : (s.type in ICON_PATHS ? s.type : 'sos'), 18)}</span>
+        <div class="body">
+          <div class="title"><span>${esc(t('sos_' + s.type))}</span> ${prioBadge} <span class="badge">${esc(s.status)}</span></div>
+          <div class="meta">${who}</div>
+          <div class="meta"><span>${esc(zoneName(s.zone_id))}</span><span>${timeAgo(s.created_at)}</span>${s.brigade_id ? `<span>${icon('truck', 12)} ${esc(s.brigade_id)}</span>` : ''}</div>
+        </div>
+        <span class="sos-actions">
+          ${s.citizen_phone && open_ ? `<button class="btn icon-btn" data-notify="${s.id}" title="${esc(t('send_sms'))}" aria-label="${esc(t('send_sms'))}">${icon('chat', 17)}</button>` : ''}
+          ${open_ ? `<button class="btn ok icon-btn" data-resolve="${s.id}" title="${esc(t('resolve'))}" aria-label="${esc(t('resolve'))}">${icon('check', 18)}</button>` : ''}
+        </span>`;
       el.onclick = (e) => { if (!e.target.dataset.resolve) map.setView([s.location.lat, s.location.lng], 15); };
       so.appendChild(el);
     });
@@ -272,13 +288,22 @@
     const nl = $('#notifications'); nl.innerHTML = '';
     if (!ov.notifications?.length) nl.innerHTML = `<p class="hint">${esc(t('no_notifications'))}</p>`;
     (ov.notifications || []).slice(0, 15).forEach(n => {
-      const el = document.createElement('div'); el.className = 'item';
+      const el = document.createElement('div'); el.className = 'item'; el.style.cursor = 'default';
       const st = n.status === 'failed' ? 'red' : n.status === 'sent' ? 'green' : 'yellow';
-      el.innerHTML = `<div class="title"><span>💬 ${esc(n.to)}</span><span class="badge ${st}">${esc(n.status)} · ${esc(n.reason)}</span></div>
+      el.innerHTML = `<div class="title"><span>${icon('chat', 15)} <span class="mono">${esc(n.to)}</span></span><span class="badge ${st}">${esc(n.status)} · ${esc(n.reason)}</span></div>
         <div class="hint" style="margin-top:6px;line-height:1.4">${esc(n.message)}</div>
         <div class="meta"><span>${timeAgo(n.created_at)}</span><span>${esc(n.provider)}</span>${n.sos_id ? `<span>SOS #${esc(n.sos_id)}</span>` : ''}</div>`;
       nl.appendChild(el);
     });
+
+    // --- live numbers over the map (counted from the same overview data)
+    const critOpen = openSOS.filter(x => x.priority === 1).length;
+    const freeBr = ov.brigades.filter(b => b.status === 'available').length;
+    $('#kpis').innerHTML = `
+      <div class="kpi ${open.length ? 'red' : ''}"><small>${esc(t('alerts'))}</small><b>${open.length}</b></div>
+      <div class="kpi"><small>${esc(t('open_sos'))}</small><b>${openSOS.length}</b></div>
+      <div class="kpi ${critOpen ? 'amber' : ''}"><small>${esc(t('priority_critical'))}</small><b>${critOpen}</b></div>
+      <div class="kpi"><small>${esc(t('br_available'))} · ${esc(t('brigades'))}</small><b>${freeBr}/${ov.brigades.length}</b></div>`;
 
     // --- system
     const rt = ov.routing;
@@ -303,22 +328,22 @@
     });
     ov.shelters.forEach(sh => {
       const pct = sh.capacity ? sh.occupancy / sh.capacity * 100 : 100, col = pctColor(pct);
-      L.circleMarker([sh.location.lat, sh.location.lng], { radius: 9, color: col, fillColor: col, fillOpacity: .85, weight: 2 })
-        .bindPopup(`<b>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)}</b><br>${pct.toFixed(1)}% (${sh.occupancy}/${sh.capacity})`).addTo(layers.shelters);
+      L.circleMarker([sh.location.lat, sh.location.lng], { radius: 10, color: '#0f151e', fillColor: col, fillOpacity: 1, weight: 3 })
+        .bindPopup(`<b>${esc(sh.name)}</b><br>${pct.toFixed(1)}% (${sh.occupancy}/${sh.capacity})`).addTo(layers.shelters);
     });
     ov.sos.filter(s => s.status !== 'resolved').forEach(s => {
       const critical = s.priority === 1;
-      if (critical) L.circle([s.location.lat, s.location.lng], { radius: 120, color: '#ef4444', fillColor: '#ef4444', fillOpacity: .25, weight: 2 }).addTo(layers.sos);
-      L.marker([s.location.lat, s.location.lng], { icon: L.divIcon({ className: '', html: `<div class="brigade-icon">${critical ? '♿' : (SOS_ICON[s.type] || '🆘')}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
+      if (critical) L.circle([s.location.lat, s.location.lng], { radius: 120, color: '#ffb547', fillColor: '#ffb547', fillOpacity: .22, weight: 2 }).addTo(layers.sos);
+      L.marker([s.location.lat, s.location.lng], { icon: L.divIcon({ className: '', html: `<div class="pin sos${critical ? ' crit' : ''}">${icon(critical ? 'wheelchair' : (s.type in ICON_PATHS ? s.type : 'sos'), 15)}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] }) })
         .bindPopup(`<b>${critical ? '♿ ' + esc(t('priority_critical')) + '<br>' : ''}${esc(t('sos_' + s.type))}</b><br>${esc(s.citizen_id)} · ${timeAgo(s.created_at)}<br>${esc(s.status)}`).addTo(layers.sos);
     });
     ov.brigades.forEach(b => {
-      L.marker([b.location.lat, b.location.lng], { icon: L.divIcon({ className: '', html: '<div class="brigade-icon">🚒</div>', iconSize: [24, 24], iconAnchor: [12, 12] }) })
+      L.marker([b.location.lat, b.location.lng], { icon: L.divIcon({ className: '', html: `<div class="pin brigade">${icon('truck', 15)}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] }) })
         .bindPopup(`<b>${esc(b.name)}</b><br>${esc(t('br_' + b.status))}`).addTo(layers.brigades);
     });
     open.forEach(a => {
-      L.circle([a.center.lat, a.center.lng], { radius: ov.crisis.radius_m || 500, color: '#ef4444', fillColor: '#ef4444', fillOpacity: .15, weight: 2, dashArray: '6 6' })
-        .bindPopup(`<b>🔴 ${esc(a.kind)}</b><br>${esc(a.message)}`).addTo(layers.alerts);
+      L.circle([a.center.lat, a.center.lng], { radius: ov.crisis.radius_m || 500, color: '#ff5a5f', fillColor: '#ff5a5f', fillOpacity: .12, weight: 2, dashArray: '6 6' })
+        .bindPopup(`<b>${esc(a.kind)}</b><br>${esc(a.message)}`).addTo(layers.alerts);
     });
   }
 
