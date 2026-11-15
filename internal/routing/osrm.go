@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -20,6 +21,9 @@ type OSRM struct {
 	Client      *http.Client
 	MaxFailures int
 	Cooldown    time.Duration
+	// SpeedMps, when > 0, replaces OSRM's (driving) duration with a pedestrian
+	// estimate so durations are comparable with the simulated router.
+	SpeedMps float64
 
 	mu        sync.Mutex
 	failures  int
@@ -116,5 +120,9 @@ func (o *OSRM) Route(ctx context.Context, from, to domain.Point, _ []domain.Road
 			geom = append(geom, domain.Point{Lat: c[1], Lng: c[0]})
 		}
 	}
-	return domain.Route{Source: "osrm", DistanceM: r.Distance, DurationS: r.Duration, Geometry: geom}, nil
+	dur := r.Duration
+	if o.SpeedMps > 0 {
+		dur = math.Round(r.Distance / o.SpeedMps)
+	}
+	return domain.Route{Source: "osrm", DistanceM: math.Round(r.Distance), DurationS: dur, Geometry: geom}, nil
 }

@@ -100,6 +100,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 @keyframes slide { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 .leaflet-container { font: inherit; }
+.dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6); }
 .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card); color: var(--text); }
 .leaflet-popup-content { margin: 10px 14px; font-size: 13px; }
 .leaflet-control-attribution { background: rgba(11,18,32,.8) !important; color: var(--muted) !important; }

@@ -105,9 +105,11 @@ function debounce(fn, ms) {
 
 function makeMap(id) {
   const map = L.map(id, { zoomControl: true }).setView([40.40, 49.86], 12);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  // Plain OSM tiles need no API key; the dark look comes from a CSS filter (.dark-tiles).
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
+    className: 'dark-tiles',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(map);
   return map;
 }

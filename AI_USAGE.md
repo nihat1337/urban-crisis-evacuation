@@ -37,7 +37,7 @@ AI tərəfindən yaradılan hər bir kod parçası:
 
 - Heç bir şəxsi məlumat, real vətəndaş məlumatı və ya məxfi açar AI alətinə ötürülməmişdir.
 - Layihədəki bütün məlumatlar (rayonlar, sığınacaqlar, briqadalar) **simulyasiya məqsədli nümunə məlumatlardır**.
-- Xarici xidmətlərdən yalnız açıq OSRM demo serveri (marşrutlaşdırma) və açıq xəritə laylarından (OpenStreetMap / CARTO) istifadə olunur.
+- Xarici xidmətlərdən yalnız açıq OSRM demo serveri (marşrutlaşdırma) və açıq xəritə laylarından (OpenStreetMap) istifadə olunur.
 
 ## 6. Açıq mənbə komponentlər
 
@@ -46,7 +46,7 @@ AI tərəfindən yaradılan hər bir kod parçası:
 | Go standart kitabxanası | BSD-3 | HTTP server, JSON, SSE |
 | `github.com/jackc/pgx/v5` | MIT | PostgreSQL drayveri |
 | Leaflet 1.9.4 | BSD-2 | Xəritə |
-| OpenStreetMap / CARTO tiles | ODbL / CC-BY | Xəritə layları |
+| OpenStreetMap tiles | ODbL | Xəritə layları |
 | OSRM demo server | BSD-2 | Küçə üzrə marşrut |
 
 ---

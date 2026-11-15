@@ -44,6 +44,7 @@ func main() {
 
 	sim := routing.NewSimulated(cfg.WalkingSpeedMps)
 	osrm := routing.NewOSRM(cfg.OSRMURL, cfg.OSRMProfile, cfg.OSRMTimeout)
+	osrm.SpeedMps = cfg.WalkingSpeedMps // evacuation is on foot: comparable durations across providers
 	router := routing.NewChain(cfg.RoutingMode, osrm, sim)
 
 	hub := events.NewHub()

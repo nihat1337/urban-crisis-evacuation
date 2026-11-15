@@ -61,6 +61,8 @@ docker compose up --build
 
 Açın: **http://localhost:8080** (vətəndaş) · **http://localhost:8080/dispatcher** (dispeçer, açar: `dispatcher-secret`)
 
+> 8080 portu məşğuldursa: `PORT=8090 docker compose up --build` → http://localhost:8090
+
 ```bash
 docker compose logs -f app     # loglar (JSON)
 docker compose down            # dayandır
@@ -218,4 +220,4 @@ Testlər: haversine · böhran alqoritmi (4 fərqli SOS, eyni vətəndaş spam, 
 - [`AI_USAGE.md`](AI_USAGE.md) — AI istifadəsi haqqında bəyannamə
 
 ---
-*Bütün məlumatlar simulyasiya məqsədlidir. Xəritə: © OpenStreetMap, © CARTO. Marşrut: OSRM demo server.*
+*Bütün məlumatlar simulyasiya məqsədlidir. Xəritə: © OpenStreetMap contributors. Marşrut: OSRM demo server (məsafə/geometriya; müddət piyada sürəti ilə hesablanır).*
