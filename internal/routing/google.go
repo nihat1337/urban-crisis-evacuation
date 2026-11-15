@@ -1,36 +1,40 @@
 package routing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
-	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nihat1337/urban-crisis-evacuation/internal/domain"
 )
 
-// GoogleDirections routes with the Google Maps Directions API (walking mode by
-// default — evacuation is on foot). It needs a server-side API key with the
-// Directions API enabled; without a key the Chain simply never uses it.
+// GoogleDirections routes with the Google Maps **Routes API v2**
+// (computeRoutes) in WALK mode — evacuation is on foot. It needs a server-side
+// API key with the Routes API enabled; without a key the Chain never uses it.
+// (The older "Directions API" is legacy and disabled for new projects.)
 type GoogleDirections struct {
-	BaseURL string // overridable for tests
-	Key     string
-	Mode    string // walking | driving | bicycling
-	Client  *http.Client
+	BaseURL    string // overridable for tests
+	Key        string
+	TravelMode string // WALK | DRIVE | BICYCLE
+	Client     *http.Client
 
 	breaker
 }
 
 func NewGoogleDirections(key string, timeout time.Duration) *GoogleDirections {
 	return &GoogleDirections{
-		BaseURL: "https://maps.googleapis.com",
-		Key:     key,
-		Mode:    "walking",
-		Client:  &http.Client{Timeout: timeout},
-		breaker: newBreaker(3, 60*time.Second),
+		BaseURL:    "https://routes.googleapis.com",
+		Key:        key,
+		TravelMode: "WALK",
+		Client:     &http.Client{Timeout: timeout},
+		breaker:    newBreaker(3, 60*time.Second),
 	}
 }
 
@@ -38,73 +42,95 @@ func (g *GoogleDirections) Name() string { return "google" }
 
 func (g *GoogleDirections) Healthy() (bool, string) { return g.healthy() }
 
-type googleResponse struct {
-	Status       string `json:"status"`
-	ErrorMessage string `json:"error_message"`
-	Routes       []struct {
-		OverviewPolyline struct {
-			Points string `json:"points"`
-		} `json:"overview_polyline"`
-		Legs []struct {
-			Distance struct {
-				Value float64 `json:"value"`
-			} `json:"distance"`
-			Duration struct {
-				Value float64 `json:"value"`
-			} `json:"duration"`
-		} `json:"legs"`
+type routesLatLng struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+}
+
+type routesWaypoint struct {
+	Location struct {
+		LatLng routesLatLng `json:"latLng"`
+	} `json:"location"`
+}
+
+type routesRequest struct {
+	Origin          routesWaypoint `json:"origin"`
+	Destination     routesWaypoint `json:"destination"`
+	TravelMode      string         `json:"travelMode"`
+	PolylineQuality string         `json:"polylineQuality"`
+	LanguageCode    string         `json:"languageCode"`
+	Units           string         `json:"units"`
+}
+
+type routesResponse struct {
+	Routes []struct {
+		DistanceMeters float64 `json:"distanceMeters"`
+		Duration       string  `json:"duration"` // e.g. "912s"
+		Polyline       struct {
+			EncodedPolyline string `json:"encodedPolyline"`
+		} `json:"polyline"`
 	} `json:"routes"`
+	Error struct {
+		Code    int    `json:"code"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 func (g *GoogleDirections) Route(ctx context.Context, from, to domain.Point, _ []domain.Road, _ Options) (domain.Route, error) {
 	if ok, _ := g.healthy(); !ok {
 		return domain.Route{}, fmt.Errorf("%w: circuit breaker open", ErrUnavailable)
 	}
-	q := url.Values{}
-	q.Set("origin", fmt.Sprintf("%f,%f", from.Lat, from.Lng))
-	q.Set("destination", fmt.Sprintf("%f,%f", to.Lat, to.Lng))
-	q.Set("mode", g.Mode)
-	q.Set("key", g.Key)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.BaseURL+"/maps/api/directions/json?"+q.Encode(), nil)
+	var reqBody routesRequest
+	reqBody.Origin.Location.LatLng = routesLatLng{from.Lat, from.Lng}
+	reqBody.Destination.Location.LatLng = routesLatLng{to.Lat, to.Lng}
+	reqBody.TravelMode = g.TravelMode
+	reqBody.PolylineQuality = "OVERVIEW"
+	reqBody.LanguageCode = "az"
+	reqBody.Units = "METRIC"
+	payload, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.BaseURL+"/directions/v2:computeRoutes", bytes.NewReader(payload))
 	if err != nil {
 		return domain.Route{}, err
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Goog-Api-Key", g.Key)
+	req.Header.Set("X-Goog-FieldMask", "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline")
+
 	resp, err := g.Client.Do(req)
 	if err != nil {
 		g.fail(err)
 		return domain.Route{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
-	var body googleResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	var body routesResponse
+	if err := json.Unmarshal(raw, &body); err != nil {
 		g.fail(err)
 		return domain.Route{}, fmt.Errorf("%w: decode: %v", ErrUnavailable, err)
 	}
-	switch body.Status {
-	case "OK":
-	case "ZERO_RESULTS", "NOT_FOUND", "INVALID_REQUEST":
-		// Valid answers about this particular request: do not trip the breaker.
-		return domain.Route{}, fmt.Errorf("google: %s %s", body.Status, body.ErrorMessage)
-	default: // REQUEST_DENIED, OVER_QUERY_LIMIT, OVER_DAILY_LIMIT, UNKNOWN_ERROR
-		err := fmt.Errorf("google: %s %s", body.Status, body.ErrorMessage)
+	switch {
+	case resp.StatusCode == http.StatusOK:
+	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound:
+		// About this particular request (e.g. no walkable route): not an outage.
+		return domain.Route{}, fmt.Errorf("google routes: %s %s", body.Error.Status, body.Error.Message)
+	default: // 401/403 key or API disabled, 429 quota, 5xx
+		err := fmt.Errorf("google routes http %d: %s %s", resp.StatusCode, body.Error.Status, body.Error.Message)
 		g.fail(err)
 		return domain.Route{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	if len(body.Routes) == 0 || len(body.Routes[0].Legs) == 0 {
-		return domain.Route{}, fmt.Errorf("google: empty route")
+	if len(body.Routes) == 0 {
+		return domain.Route{}, fmt.Errorf("google routes: no route")
 	}
 	g.success()
 	r := body.Routes[0]
-	var dist, dur float64
-	for _, l := range r.Legs {
-		dist += l.Distance.Value
-		dur += l.Duration.Value
-	}
+	dur, _ := strconv.ParseFloat(strings.TrimSuffix(r.Duration, "s"), 64)
 	return domain.Route{
 		Source:    "google",
-		DistanceM: math.Round(dist),
+		DistanceM: math.Round(r.DistanceMeters),
 		DurationS: math.Round(dur),
-		Geometry:  decodePolyline(r.OverviewPolyline.Points),
+		Geometry:  decodePolyline(r.Polyline.EncodedPolyline),
 	}, nil
 }
 

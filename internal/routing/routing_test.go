@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -156,10 +157,15 @@ func TestDecodePolyline(t *testing.T) {
 
 func TestChainPrefersGoogleThenFallsBack(t *testing.T) {
 	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("mode") != "walking" || r.URL.Query().Get("key") != "k" {
-			t.Errorf("unexpected query %s", r.URL.RawQuery)
+		if r.Method != http.MethodPost || r.URL.Path != "/directions/v2:computeRoutes" || r.Header.Get("X-Goog-Api-Key") != "k" || r.Header.Get("X-Goog-FieldMask") == "" {
+			t.Errorf("unexpected request %s %s key=%q", r.Method, r.URL.Path, r.Header.Get("X-Goog-Api-Key"))
 		}
-		_, _ = w.Write([]byte(`{"status":"OK","routes":[{"overview_polyline":{"points":"_p~iF~ps|U_ulLnnqC"},"legs":[{"distance":{"value":1200},"duration":{"value":900}}]}]}`))
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["travelMode"] != "WALK" {
+			t.Errorf("expected WALK, got %v", body["travelMode"])
+		}
+		_, _ = w.Write([]byte(`{"routes":[{"distanceMeters":1200,"duration":"900s","polyline":{"encodedPolyline":"_p~iF~ps|U_ulLnnqC"}}]}`))
 	}))
 	defer google.Close()
 	osrm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -182,7 +188,8 @@ func TestChainPrefersGoogleThenFallsBack(t *testing.T) {
 
 	// Google denies the request (bad key / billing) → OSRM takes over, breaker opens after 3.
 	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"REQUEST_DENIED","error_message":"billing"}`))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Routes API has not been used in project"}}`))
 	}))
 	defer denied.Close()
 	g.BaseURL = denied.URL
