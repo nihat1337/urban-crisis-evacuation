@@ -44,13 +44,20 @@ func main() {
 	}
 
 	sim := routing.NewSimulated(cfg.WalkingSpeedMps)
-	osrm := routing.NewOSRM(cfg.OSRMURL, cfg.OSRMProfile, cfg.OSRMTimeout)
+	osrm := routing.NewOSRM(cfg.OSRMURL, cfg.OSRMProfile, cfg.RoutingTimeout)
 	osrm.SpeedMps = cfg.WalkingSpeedMps // evacuation is on foot: comparable durations across providers
 	router := routing.NewChain(cfg.RoutingMode, osrm, sim)
+	router.Timeout = cfg.RoutingTimeout
+	router.Cache = routing.NewRouteCache(cfg.RouteCacheTTL, 5000)
 	if cfg.GoogleDirectionsKey != "" {
-		router.Google = routing.NewGoogleDirections(cfg.GoogleDirectionsKey, cfg.OSRMTimeout)
-		log.Info("routing: Google Directions enabled (walking)")
+		router.Google = routing.NewGoogleDirections(cfg.GoogleDirectionsKey, cfg.RoutingTimeout)
+		log.Info("routing: Google Routes enabled (walking)")
 	}
+	if cfg.RoutingChaos != "" {
+		router.SetChaos(cfg.RoutingChaos)
+		log.Warn("routing: simulated outage enabled from config", "chaos", cfg.RoutingChaos)
+	}
+	log.Info("routing", "mode", cfg.RoutingMode, "timeout", cfg.RoutingTimeout.String(), "cache_ttl", cfg.RouteCacheTTL.String())
 
 	hub := events.NewHub()
 	engine := crisis.New(crisis.Config{
@@ -60,6 +67,7 @@ func main() {
 	svc := service.New(service.Config{ShelterWarnPct: cfg.ShelterWarnPct, MaxAlternatives: 2}, st, router, engine, hub, log).
 		WithNotifier(notify.NewLogSender(log), cfg.PublicURL) // NOTIFY_PROVIDER=simulated; a real gateway plugs in here
 	log.Info("notifications", "provider", cfg.NotifyProvider, "public_url", cfg.PublicURL)
+	svc.StartMonitors(ctx) // pushes routing.status events when the external API goes down / comes back
 
 	handler := api.New(api.Config{
 		DispatcherKey: cfg.DispatcherKey, RateLimitRPS: cfg.RateLimitRPS, RateLimitBurst: cfg.RateLimitBurst,

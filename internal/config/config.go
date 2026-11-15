@@ -22,7 +22,10 @@ type Config struct {
 
 	OSRMURL         string
 	OSRMProfile     string
-	OSRMTimeout     time.Duration
+	OSRMTimeout     time.Duration // alias of RoutingTimeout (kept for compatibility)
+	RoutingTimeout  time.Duration // per-request limit for every external routing call (jury rule: 5 s)
+	RoutingChaos    string        // "" | 503 | timeout — simulate an external outage from start-up
+	RouteCacheTTL   time.Duration
 	RoutingMode     string // auto | google | osrm | simulated
 	WalkingSpeedMps float64
 
@@ -62,7 +65,10 @@ func Load() Config {
 
 		OSRMURL:         strings.TrimRight(env("OSRM_URL", "https://router.project-osrm.org"), "/"),
 		OSRMProfile:     env("OSRM_PROFILE", "driving"),
-		OSRMTimeout:     envDuration("OSRM_TIMEOUT", 4*time.Second),
+		OSRMTimeout:     envDuration("OSRM_TIMEOUT", envDuration("ROUTING_TIMEOUT", 5*time.Second)),
+		RoutingTimeout:  envDuration("ROUTING_TIMEOUT", envDuration("OSRM_TIMEOUT", 5*time.Second)),
+		RoutingChaos:    env("ROUTING_CHAOS", ""),
+		RouteCacheTTL:   envDuration("ROUTE_CACHE_TTL", 24*time.Hour),
 		RoutingMode:     env("ROUTING_MODE", "auto"),
 		WalkingSpeedMps: envFloat("WALKING_SPEED_MPS", 1.3),
 

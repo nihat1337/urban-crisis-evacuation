@@ -82,6 +82,15 @@
       </div>
       <p class="hint" data-i18n="simulate_hint"></p>
       <p class="hint" data-i18n="click_road_hint"></p>
+      <div class="row" style="margin-top:10px;align-items:center">
+        <span class="hint" data-i18n="chaos_title">Xarici API simulyasiyası</span>
+        <span class="seg" id="chaos">
+          <button class="btn" data-chaos="off">🟢 <span data-i18n="chaos_normal">Normal</span></button>
+          <button class="btn" data-chaos="503">🔴 <span data-i18n="chaos_503">503 xətası</span></button>
+          <button class="btn" data-chaos="timeout">⏱ <span data-i18n="chaos_timeout">Timeout (5 s)</span></button>
+        </span>
+      </div>
+      <p class="hint" data-i18n="chaos_hint"></p>
     </section>
 
     <section class="card">
@@ -307,8 +316,10 @@
 
     // --- system
     const rt = ov.routing;
+    $$('[data-chaos]').forEach(b => b.classList.toggle('active', (rt.chaos || 'off') === b.dataset.chaos));
     $('#sys').innerHTML = `
-      <dt>${esc(t('routing'))}</dt><dd>${rt.mode} · ${rt.provider === 'google' ? '<span class="badge green">Google Directions ✓</span>' : rt.provider === 'osrm' ? '<span class="badge green">OSRM ✓</span>' : '<span class="badge yellow">' + esc(t('routing_simulated')) + '</span>'}${rt.google_configured && !rt.google_available ? ' <span class="badge red">Google ✗</span>' : ''}</dd>
+      <dt>${esc(t('routing'))}</dt><dd>${rt.degraded ? '<span class="badge red">📡 ' + esc(t('degraded')) + '</span> ' : '<span class="badge green">' + esc(t('online')) + '</span> '}${rt.provider === 'google' ? '<span class="badge green">Google Routes ✓</span>' : rt.provider === 'osrm' ? '<span class="badge green">OSRM ✓</span>' : '<span class="badge yellow">' + esc(t('routing_simulated')) + '</span>'}${rt.google_configured && !rt.google_available ? ' <span class="badge red">Google ✗</span>' : ''}${rt.breaker_open ? ' <span class="badge orange">breaker open</span>' : ''} · keş ${rt.cache_size}</dd>
+      ${rt.chaos ? `<dt>Chaos</dt><dd><span class="badge red">${esc(rt.chaos)}</span></dd>` : ''}
       <dt>Xəritə</dt><dd>${map.provider === 'google' ? '<span class="badge green">Google Maps</span>' : '<span class="badge">OpenStreetMap</span>'}</dd>
       <dt>${esc(t('store'))}</dt><dd>${esc(ov.store)}</dd>
       <dt>Böhran qaydası</dt><dd>≥${ov.crisis.min_signals} SOS / ${Math.round(ov.crisis.window / 6e10)} ${esc(t('min'))} / ${ov.crisis.radius_m} m · &gt;${ov.crisis.shelter_alert_pct}%</dd>
@@ -371,8 +382,17 @@
     } catch (e) { toast(e.message, 'error'); }
   };
 
+  $$('[data-chaos]').forEach(b => b.onclick = async () => {
+    try {
+      const r = await api('/dispatch/chaos', { method: 'POST', body: { routing: b.dataset.chaos } });
+      toast(r.routing.degraded ? `📡 ${t('degraded')} — ${r.routing.last_error || ''}` : `✅ ${t('online_again')}`, r.routing.degraded ? 'warn' : 'ok', 6000);
+      load();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+
   connectSSE(ev => {
     if (ev.type === 'alert.created') toast(`🔴 ${ev.data.message}`, 'error', 9000);
+    else if (ev.type === 'routing.status') toast(ev.data.degraded ? `📡 ${t('degraded')}: ${ev.data.last_error || ''}` : `✅ ${t('online_again')}`, ev.data.degraded ? 'warn' : 'ok', 6000);
     else if (ev.type === 'sos.priority') toast(`♿ ${t('priority_critical')} · ${t('sos_' + ev.data.type)} · ${zoneName(ev.data.zone_id)}`, 'error', 9000);
     else if (ev.type === 'notification.sent') toast(`📩 SMS → ${ev.data.to} (${ev.data.reason})`, 'info', 4000);
     else if (ev.type === 'sos.created' && ev.data.priority !== 1) toast(`${SOS_ICON[ev.data.type] || '🆘'} SOS · ${zoneName(ev.data.zone_id)}`, 'warn', 3000);

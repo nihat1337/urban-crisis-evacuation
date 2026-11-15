@@ -69,6 +69,7 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 	mux.Handle("POST /api/v1/dispatch/sos/{id}/resolve", s.requireKey(s.resolveSOS))
 	mux.Handle("POST /api/v1/dispatch/sos/{id}/notify", s.requireKey(s.notifySOS))
 	mux.Handle("GET /api/v1/dispatch/notifications", s.requireKey(s.listNotifications))
+	mux.Handle("POST /api/v1/dispatch/chaos", s.requireKey(s.chaos))
 	mux.Handle("PATCH /api/v1/dispatch/shelters/{id}", s.requireKey(s.patchShelter))
 	mux.Handle("PATCH /api/v1/dispatch/roads/{id}", s.requireKey(s.patchRoad))
 	mux.Handle("PATCH /api/v1/dispatch/brigades/{id}", s.requireKey(s.patchBrigade))
@@ -172,8 +173,14 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.Ping(r.Context()); err != nil {
 		status, code, dbErr = "degraded", http.StatusServiceUnavailable, err.Error()
 	}
+	rt := s.svc.RoutingStatus()
+	mode := "online"
+	if rt.Degraded {
+		mode = "offline" // backup routing (cache / local graph) in use — service continues
+	}
 	writeJSON(w, code, map[string]any{
 		"status":    status,
+		"routing_mode": mode,
 		"version":   s.cfg.Version,
 		"uptime_s":  int(time.Since(s.started).Seconds()),
 		"store":     s.svc.StoreName(),
@@ -296,6 +303,24 @@ func (s *Server) notifySOS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"notification": n})
+}
+
+// chaos toggles a simulated external routing outage for demos/tests:
+// {"routing":"503"|"timeout"|"off"}.
+func (s *Server) chaos(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Routing string `json:"routing"`
+	}
+	if err := decode(r, &in); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	st, err := s.svc.SetRoutingChaos(in.Routing)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"routing": st})
 }
 
 func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) {

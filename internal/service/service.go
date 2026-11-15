@@ -87,6 +87,61 @@ func (s *Service) NotifyStatus() map[string]any {
 	return map[string]any{"provider": s.notifier.Name(), "simulated": s.notifier.Simulated()}
 }
 
+type chaosSetter interface {
+	SetChaos(mode string)
+	Chaos() string
+}
+
+// SetRoutingChaos simulates an external routing outage ("503", "timeout") or
+// clears it (""). Used by the dispatcher panel to demonstrate the fallback.
+func (s *Service) SetRoutingChaos(mode string) (routing.Status, error) {
+	switch mode {
+	case "", "off", "503", "timeout":
+	default:
+		return routing.Status{}, invalid("invalid_action")
+	}
+	if mode == "off" {
+		mode = ""
+	}
+	c, ok := s.router.(chaosSetter)
+	if !ok {
+		return routing.Status{}, conflict("invalid_action")
+	}
+	c.SetChaos(mode)
+	st := s.RoutingStatus()
+	s.log.Warn("routing chaos switched", "mode", mode, "degraded", st.Degraded)
+	s.hub.Publish("routing.status", st)
+	return st, nil
+}
+
+// StartMonitors watches the routing layer and publishes routing.status over
+// SSE whenever it flips between online and offline/backup mode, so every
+// open citizen app shows (or hides) the offline banner within seconds.
+func (s *Service) StartMonitors(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(3 * time.Second)
+		defer t.Stop()
+		last := s.RoutingStatus().Degraded
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				st := s.RoutingStatus()
+				if st.Degraded != last {
+					last = st.Degraded
+					if st.Degraded {
+						s.log.Warn("routing degraded → offline/backup mode", "err", st.LastError)
+					} else {
+						s.log.Info("routing recovered → online mode")
+					}
+					s.hub.Publish("routing.status", st)
+				}
+			}
+		}
+	}()
+}
+
 func (s *Service) StoreName() string { return s.store.Name() }
 
 func (s *Service) RoutingStatus() routing.Status {
@@ -265,6 +320,17 @@ func (s *Service) Plan(ctx context.Context, origin *domain.Point, zoneID string,
 	}
 	plan.Recommended = &cands[0]
 	plan.Alternatives = cands[1:]
+	plan.Mode = "online"
+	for _, c := range cands {
+		if c.Route != nil && c.Route.Offline {
+			plan.Mode = "offline"
+			plan.OfflineReason = c.Route.OfflineReason
+			break
+		}
+	}
+	if plan.Mode == "offline" {
+		plan.Warnings = append(plan.Warnings, "offline_mode")
+	}
 	if plan.Recommended.Route != nil && plan.Recommended.Route.Detour {
 		plan.Warnings = append(plan.Warnings, "detour")
 	}

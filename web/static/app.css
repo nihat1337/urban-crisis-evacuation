@@ -259,6 +259,20 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 8px 0 0; }
 .pin.sos.crit { background: #ffb547; color: #1f1400; }
 .pin.brigade { background: #5b9bff; border-radius: 8px; color: #08142b; }
 
+/* offline / backup routing banner */
+.offline-banner { display: flex; gap: 12px; align-items: flex-start; padding: 10px 18px; font-size: 13px;
+  background: linear-gradient(90deg, rgba(249,115,22,.25), rgba(234,179,8,.15)); border-bottom: 1px solid var(--orange); color: #fed7aa; }
+.offline-banner[hidden] { display: none; }
+.offline-banner .icon { font-size: 22px; line-height: 1; animation: blink 1.4s ease-in-out infinite; }
+.offline-banner .hint { color: #fdba74; margin-top: 2px; }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+body.light .offline-banner { background: #fff1e6; border-bottom: 2px solid #f97316; color: #7c2d12; }
+body.light .offline-banner b { color: #9a3412; }
+body.light .offline-banner .hint { color: #b45309; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.seg .btn { border: 0; border-radius: 0; padding: 7px 10px; font-size: 12px; }
+.seg .btn + .btn { border-left: 1px solid var(--border); }
+
 /* dispatcher login gate */
 .user { display: flex; align-items: center; gap: 8px; }
 .user .chip { height: 32px; font-size: 13px; font-weight: 600; padding: 0 12px; border-radius: 999px; display: inline-flex; align-items: center; gap: 6px;

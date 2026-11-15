@@ -22,6 +22,10 @@
   <select id="lang" title="Language" aria-label="Language"></select>
 </header>
 
+<div id="offline" class="offline-banner" hidden role="status" aria-live="polite">
+  <span class="icon">📡</span>
+  <div><b data-i18n="offline_title">Oflayn / ehtiyat marşrut rejimi</b><div class="hint" id="offline-text" data-i18n="offline_banner"></div><div class="hint" id="offline-tiles" hidden data-i18n="offline_tiles"></div></div>
+</div>
 <main class="layout citizen">
   <aside class="panel">
     <section class="card">
@@ -87,8 +91,33 @@
 (async function () {
   await initI18n();
   const map = await makeMap('map', { light: true });
-  const layers = { shelters: L.layerGroup().addTo(map), routes: L.layerGroup().addTo(map) };
+  const layers = { shelters: L.layerGroup().addTo(map), routes: L.layerGroup().addTo(map), schematic: L.layerGroup() };
   let origin = null, originMarker = null, zones = [], plan = null, fitted = false;
+
+  // --- offline / backup routing mode banner --------------------------------
+  // Shown when the external map/routing API is down (HTTP 5xx or > 5 s): the
+  // server keeps serving routes from the last cached routes + local road graph.
+  let offline = false, tilesDown = false, tileErrors = 0;
+  function setOffline(on, reason) {
+    const was = offline; offline = !!on;
+    $('#offline').hidden = !offline && !tilesDown;
+    $('#offline-text').textContent = t('offline_banner') + (offline && reason ? ' (' + reason + ')' : '');
+    if (was && !offline) toast('✅ ' + t('online_again'), 'ok', 6000);
+    if (!was && offline) toast('📡 ' + t('offline_title'), 'warn', 8000);
+  }
+  // If the tile server itself is down, draw the local road graph so the user
+  // still has a schematic map to orient by.
+  map.on('tileerror', async () => {
+    if (++tileErrors < 6 || tilesDown) return;
+    tilesDown = true;
+    $('#offline').hidden = false; $('#offline-tiles').hidden = false;
+    try {
+      const roads = (await api('/roads')).roads;
+      roads.forEach(r => L.polyline([[r.from.lat, r.from.lng], [r.to.lat, r.to.lng]], { color: '#64748b', weight: 2, opacity: .8 }).addTo(layers.schematic));
+      layers.schematic.addTo(map);
+    } catch (_) { /* nothing more we can do offline */ }
+  });
+  map.on('tileload', () => { tileErrors = 0; });
 
   // Priority role (reduced mobility / special care): remembered per device,
   // sent with every SOS/status and switches the planner to accessible-only routing.
@@ -160,6 +189,7 @@
     try {
       plan = await api(`/evacuation/plan?lat=${origin.lat}&lng=${origin.lng}&role=${role()}`);
       if (plan.warnings?.includes('no_accessible_shelter')) toast(t('no_accessible_shelter'), 'warn', 7000);
+      if (!plan.accessible) setOffline(plan.mode === 'offline', plan.offline_reason);
       render();
     } catch (e) { toast(e.message, 'error'); }
   }, 150);
@@ -176,8 +206,9 @@
       $('#route-src').textContent = '♿ ' + t('accessible_route');
       $('#route-src').className = 'badge orange';
     } else {
-      $('#route-src').textContent = src === 'google' ? 'Google Directions' : src === 'osrm' ? 'OSRM' : src === 'simulated' ? t('routing_simulated') : '';
-      $('#route-src').className = 'badge ' + (src === 'google' || src === 'osrm' ? 'green' : 'yellow');
+      const off = plan.recommended.route?.offline;
+      $('#route-src').textContent = src === 'google' ? 'Google Routes' : src === 'osrm' ? 'OSRM' : src === 'cache' ? '📡 ' + t('routing_cache') : src === 'simulated' ? (off ? '📡 ' + t('routing_backup') : t('routing_simulated')) : '';
+      $('#route-src').className = 'badge ' + (off ? 'orange' : (src === 'google' || src === 'osrm' ? 'green' : 'yellow'));
     }
     if (plan.accessible) { const n = document.createElement('p'); n.className = 'hint'; n.textContent = '♿ ' + t('accessible_only'); list.appendChild(n); }
 
@@ -260,6 +291,10 @@
       else if (d.reason === 'shelter_opened') toast(`⛺ ${t('shelter_opened')}: ${d.shelter_name}`, 'ok', 7000);
       refresh();
     } else if (ev.type === 'shelter.updated' || ev.type === 'road.updated' || ev.type === 'shelter.created') {
+      refresh();
+    } else if (ev.type === 'routing.status') {
+      // external routing went down or came back: switch banner and recompute
+      setOffline(ev.data.degraded, ev.data.last_error);
       refresh();
     }
   }, setLive);

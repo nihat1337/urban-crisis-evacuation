@@ -203,3 +203,98 @@ func TestChainPrefersGoogleThenFallsBack(t *testing.T) {
 		t.Fatalf("google breaker should be open: %+v", st)
 	}
 }
+
+// Jury scenario: the external routing API returns HTTP 503. The chain must not
+// error, must open the breaker, serve the last cached route first and the
+// local road graph after that — all flagged Offline.
+func TestOutage503ServesCacheThenLocalGraph(t *testing.T) {
+	healthy := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !healthy {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":"Ok","routes":[{"distance":1500,"duration":1100,"geometry":{"coordinates":[[49.8,40.4],[49.81,40.41]]}}]}`))
+	}))
+	defer srv.Close()
+	ch := NewChain("auto", NewOSRM(srv.URL, "driving", time.Second), NewSimulated(1.3))
+	a, c := p(40.400, 49.800), p(40.410, 49.810)
+
+	// 1) online: real route, cached
+	r, err := ch.Route(context.Background(), a, c, squareRoads(), Options{})
+	if err != nil || r.Source != "osrm" || r.Offline {
+		t.Fatalf("online route expected, got %+v %v", r, err)
+	}
+	if ch.Cache.Len() != 1 {
+		t.Fatalf("route should be cached")
+	}
+	// 2) outage: same pair → cached route, flagged offline
+	healthy = false
+	r, err = ch.Route(context.Background(), a, c, squareRoads(), Options{})
+	if err != nil || r.Source != "cache" || !r.Offline || r.DistanceM != 1500 || r.CachedAt == nil {
+		t.Fatalf("cached offline route expected, got %+v %v", r, err)
+	}
+	// 3) outage, unseen pair → local road graph, flagged offline
+	r, err = ch.Route(context.Background(), p(40.400, 49.810), p(40.410, 49.800), squareRoads(), Options{})
+	if err != nil || r.Source != "simulated" || !r.Offline || r.OfflineReason == "" {
+		t.Fatalf("local-graph offline route expected, got %+v %v", r, err)
+	}
+	// breaker opens after 3 failures; status reports degraded
+	for i := 0; i < 3; i++ {
+		_, _ = ch.Route(context.Background(), a, c, squareRoads(), Options{})
+	}
+	if st := ch.Status(); !st.Degraded || !st.BreakerOpen {
+		t.Fatalf("expected degraded status, got %+v", st)
+	}
+	// 4) recovery: breaker closed by cooldown → online again
+	ch.OSRM.breaker.openUntil = time.Time{}
+	healthy = true
+	r, _ = ch.Route(context.Background(), a, c, squareRoads(), Options{})
+	if r.Source != "osrm" || r.Offline {
+		t.Fatalf("expected recovery to online, got %+v", r)
+	}
+}
+
+// Jury scenario: the API hangs longer than the timeout. The request must come
+// back promptly with a backup route instead of blocking the citizen.
+func TestOutageTimeoutFallsBackPromptly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(10 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	ch := NewChain("auto", NewOSRM(srv.URL, "driving", 700*time.Millisecond), NewSimulated(1.3))
+	start := time.Now()
+	r, err := ch.Route(context.Background(), p(40.400, 49.800), p(40.410, 49.810), squareRoads(), Options{})
+	if err != nil || !r.Offline || r.Source != "simulated" {
+		t.Fatalf("expected offline fallback, got %+v %v", r, err)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("fallback took too long: %s", el)
+	}
+}
+
+func TestChaosSwitchSimulatesOutage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"Ok","routes":[{"distance":1500,"duration":1100,"geometry":{"coordinates":[[49.8,40.4],[49.81,40.41]]}}]}`))
+	}))
+	defer srv.Close()
+	ch := NewChain("auto", NewOSRM(srv.URL, "driving", time.Second), NewSimulated(1.3))
+	ch.Timeout = 300 * time.Millisecond
+	ch.SetChaos("timeout")
+	start := time.Now()
+	r, err := ch.Route(context.Background(), p(40.400, 49.800), p(40.410, 49.810), squareRoads(), Options{})
+	if err != nil || !r.Offline || time.Since(start) < 250*time.Millisecond {
+		t.Fatalf("expected simulated timeout then fallback, got %+v %v", r, err)
+	}
+	if st := ch.Status(); !st.Degraded || st.Chaos != "timeout" {
+		t.Fatalf("status should report chaos, got %+v", st)
+	}
+	ch.SetChaos("")
+	r, _ = ch.Route(context.Background(), p(40.400, 49.800), p(40.410, 49.810), squareRoads(), Options{})
+	if r.Offline || r.Source != "osrm" {
+		t.Fatalf("expected online after chaos off, got %+v", r)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nihat1337/urban-crisis-evacuation/internal/crisis"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/events"
@@ -276,5 +277,55 @@ func TestProfileAndSMSNotification(t *testing.T) {
 	_, out = do(t, "GET", srv.URL+"/api/v1/dispatch/notifications", nil, testKey)
 	if len(out["notifications"].([]any)) != 2 {
 		t.Fatalf("expected 2 notifications, got %v", out["notifications"])
+	}
+}
+
+// Jury scenario via the API: with the external routing API "down" (simulated
+// 503) the plan endpoint still answers 200 in offline/backup mode and health
+// reports routing_mode=offline; switching the outage off restores online mode.
+func TestExternalRoutingOutageKeepsServing(t *testing.T) {
+	st := memory.New()
+	if err := seed.Apply(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hub := events.NewHub()
+	eng := crisis.New(crisis.DefaultConfig(), st)
+	osrm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"Ok","routes":[{"distance":1500,"duration":1100,"geometry":{"coordinates":[[49.83,40.387],[49.838,40.39]]}}]}`))
+	}))
+	defer osrm.Close()
+	router := routing.NewChain("auto", routing.NewOSRM(osrm.URL, "driving", time.Second), routing.NewSimulated(1.3))
+	svc := service.New(service.Config{ShelterWarnPct: 90, MaxAlternatives: 2}, st, router, eng, hub, log)
+	srv := httptest.NewServer(New(Config{DispatcherKey: testKey, RateLimitRPS: 1000, RateLimitBurst: 1000, DefaultLang: "az"}, svc, hub, log))
+	defer srv.Close()
+
+	resp, out := do(t, "GET", srv.URL+"/api/v1/evacuation/plan?lat=40.387&lng=49.830", nil, "")
+	if resp.StatusCode != 200 || out["mode"] != "online" {
+		t.Fatalf("online plan expected: %d %v", resp.StatusCode, out["mode"])
+	}
+	resp, out = do(t, "POST", srv.URL+"/api/v1/dispatch/chaos", map[string]any{"routing": "503"}, testKey)
+	if resp.StatusCode != 200 || out["routing"].(map[string]any)["degraded"] != true {
+		t.Fatalf("chaos on: %d %v", resp.StatusCode, out)
+	}
+	resp, out = do(t, "GET", srv.URL+"/api/v1/evacuation/plan?lat=40.387&lng=49.830", nil, "")
+	if resp.StatusCode != 200 || out["mode"] != "offline" || out["offline_reason"] == "" {
+		t.Fatalf("offline plan expected: %d mode=%v", resp.StatusCode, out["mode"])
+	}
+	rec := out["recommended"].(map[string]any)["route"].(map[string]any)
+	if rec["offline"] != true || (rec["source"] != "cache" && rec["source"] != "simulated") {
+		t.Fatalf("backup route expected, got %v", rec)
+	}
+	_, out = do(t, "GET", srv.URL+"/api/v1/health", nil, "")
+	if out["routing_mode"] != "offline" || out["status"] != "ok" {
+		t.Fatalf("health must stay ok but report offline routing: %v", out)
+	}
+	resp, _ = do(t, "POST", srv.URL+"/api/v1/dispatch/chaos", map[string]any{"routing": "off"}, testKey)
+	if resp.StatusCode != 200 {
+		t.Fatalf("chaos off: %d", resp.StatusCode)
+	}
+	_, out = do(t, "GET", srv.URL+"/api/v1/evacuation/plan?lat=40.387&lng=49.830", nil, "")
+	if out["mode"] != "online" {
+		t.Fatalf("expected online after recovery, got %v", out["mode"])
 	}
 }

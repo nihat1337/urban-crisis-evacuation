@@ -31,6 +31,9 @@ type Router interface {
 type Status struct {
 	Mode             string `json:"mode"`
 	Provider         string `json:"provider"` // primary provider right now: google | osrm | simulated
+	Degraded         bool   `json:"degraded"` // external routing configured but unusable → offline/backup mode
+	Chaos            string `json:"chaos,omitempty"`
+	CacheSize        int    `json:"cache_size"`
 	GoogleConfigured bool   `json:"google_configured"`
 	GoogleAvailable  bool   `json:"google_available"`
 	OSRMAvailable    bool   `json:"osrm_available"`

@@ -281,6 +281,12 @@ type Route struct {
 	Detour    bool    `json:"detour"`     // true when a blocked road forced an alternative
 	Accessible bool   `json:"accessible"` // true when computed over barrier-free roads only
 	Notes     string  `json:"notes,omitempty"`
+	// Offline is true when the external routing API was unavailable (HTTP 5xx,
+	// timeout, breaker open) and the route came from the local backup: the
+	// last cached route ("cache") or the local road graph ("simulated").
+	Offline       bool       `json:"offline"`
+	OfflineReason string     `json:"offline_reason,omitempty"`
+	CachedAt      *time.Time `json:"cached_at,omitempty"`
 }
 
 // ShelterOption is a candidate shelter together with its route.
@@ -297,6 +303,8 @@ type EvacuationPlan struct {
 	Origin       Point           `json:"origin"`
 	ZoneID       string          `json:"zone_id"`
 	Accessible   bool            `json:"accessible"` // plan restricted to accessible shelters & roads
+	Mode         string          `json:"mode"`       // online | offline (backup routing in use)
+	OfflineReason string         `json:"offline_reason,omitempty"`
 	Recommended  *ShelterOption  `json:"recommended"`
 	Alternatives []ShelterOption `json:"alternatives"`
 	Warnings     []string        `json:"warnings,omitempty"`
