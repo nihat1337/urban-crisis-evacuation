@@ -79,6 +79,11 @@
     </section>
 
     <section class="card">
+      <h3><span data-i18n="notifications">SMS bildirişləri</span><span id="notif-provider" class="badge"></span></h3>
+      <div id="notifications" class="list"></div>
+    </section>
+
+    <section class="card">
       <h3 data-i18n="overview">Sistem</h3>
       <dl class="kv" id="sys"></dl>
     </section>
@@ -237,15 +242,42 @@
       const critical = s.priority === 1;
       const el = document.createElement('div'); el.className = 'item' + (critical && s.status !== 'resolved' ? ' critical' : ''); if (s.status === 'resolved') el.style.opacity = .5;
       const prioBadge = critical ? `<span class="badge red">♿ ${esc(t('priority_critical'))}</span>` : '';
+      const who = s.citizen_phone
+        ? `<span>👤 ${esc(s.citizen_name || s.citizen_id)}</span><a class="badge green" href="tel:${esc(s.citizen_phone)}" title="${esc(t('call'))}">📞 ${esc(s.citizen_phone)}</a>${s.citizen_email ? `<a class="badge" href="mailto:${esc(s.citizen_email)}">✉️</a>` : ''}`
+        : `<span class="badge orange">${esc(t('anonymous'))} · ${esc(s.citizen_id)}</span>`;
       el.innerHTML = `<div class="title"><span>${SOS_ICON[s.type] || '🆘'} ${esc(t('sos_' + s.type))} ${prioBadge} <span class="badge">${esc(s.status)}</span></span>
-        ${s.status !== 'resolved' ? `<button class="btn small ok" data-resolve="${s.id}">✓ ${esc(t('resolve'))}</button>` : ''}</div>
-        <div class="meta"><span>${esc(zoneName(s.zone_id))}</span><span>${timeAgo(s.created_at)}</span><span>${esc(s.citizen_id)}</span>${s.brigade_id ? `<span>🚒 ${esc(s.brigade_id)}</span>` : ''}</div>`;
+        <span class="row" style="gap:4px">${s.citizen_phone && s.status !== 'resolved' ? `<button class="btn small" data-notify="${s.id}" title="${esc(t('send_sms'))}">💬</button>` : ''}
+        ${s.status !== 'resolved' ? `<button class="btn small ok" data-resolve="${s.id}">✓ ${esc(t('resolve'))}</button>` : ''}</span></div>
+        <div class="meta">${who}</div>
+        <div class="meta"><span>${esc(zoneName(s.zone_id))}</span><span>${timeAgo(s.created_at)}</span>${s.brigade_id ? `<span>🚒 ${esc(s.brigade_id)}</span>` : ''}</div>`;
       el.onclick = (e) => { if (!e.target.dataset.resolve) map.setView([s.location.lat, s.location.lng], 15); };
       so.appendChild(el);
     });
     $$('[data-resolve]').forEach(b => b.onclick = async (e) => {
       e.stopPropagation();
       try { await api(`/dispatch/sos/${b.dataset.resolve}/resolve`, { method: 'POST', body: {} }); load(); } catch (err) { toast(err.message, 'error'); }
+    });
+    $$('[data-notify]').forEach(b => b.onclick = async (e) => {
+      e.stopPropagation(); b.disabled = true;
+      try {
+        const r = await api(`/dispatch/sos/${b.dataset.notify}/notify`, { method: 'POST', body: {} });
+        toast(`📩 ${t('sms_sent')} → ${r.notification.to}: ${r.notification.message}`, 'ok', 10000);
+        load();
+      } catch (err) { toast(err.message, 'error'); b.disabled = false; }
+    });
+    $$('.item a[href^="tel:"], .item a[href^="mailto:"]').forEach(a => a.onclick = (e) => e.stopPropagation());
+
+    // --- notifications journal
+    $('#notif-provider').textContent = ov.notify?.simulated ? t('sms_simulated') : (ov.notify?.provider || '');
+    const nl = $('#notifications'); nl.innerHTML = '';
+    if (!ov.notifications?.length) nl.innerHTML = `<p class="hint">${esc(t('no_notifications'))}</p>`;
+    (ov.notifications || []).slice(0, 15).forEach(n => {
+      const el = document.createElement('div'); el.className = 'item';
+      const st = n.status === 'failed' ? 'red' : n.status === 'sent' ? 'green' : 'yellow';
+      el.innerHTML = `<div class="title"><span>💬 ${esc(n.to)}</span><span class="badge ${st}">${esc(n.status)} · ${esc(n.reason)}</span></div>
+        <div class="hint" style="margin-top:6px;line-height:1.4">${esc(n.message)}</div>
+        <div class="meta"><span>${timeAgo(n.created_at)}</span><span>${esc(n.provider)}</span>${n.sos_id ? `<span>SOS #${esc(n.sos_id)}</span>` : ''}</div>`;
+      nl.appendChild(el);
     });
 
     // --- system
@@ -317,6 +349,7 @@
   connectSSE(ev => {
     if (ev.type === 'alert.created') toast(`🔴 ${ev.data.message}`, 'error', 9000);
     else if (ev.type === 'sos.priority') toast(`♿ ${t('priority_critical')} · ${t('sos_' + ev.data.type)} · ${zoneName(ev.data.zone_id)}`, 'error', 9000);
+    else if (ev.type === 'notification.sent') toast(`📩 SMS → ${ev.data.to} (${ev.data.reason})`, 'info', 4000);
     else if (ev.type === 'sos.created' && ev.data.priority !== 1) toast(`${SOS_ICON[ev.data.type] || '🆘'} SOS · ${zoneName(ev.data.zone_id)}`, 'warn', 3000);
     reload();
   }, setLive);

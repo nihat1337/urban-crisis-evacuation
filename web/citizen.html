@@ -32,6 +32,17 @@
       <p class="hint" data-i18n="click_map_hint">Yerinizi seçmək üçün xəritəyə klikləyin və ya rayon seçin</p>
     </section>
 
+    <section class="card" id="profile-card">
+      <h3><span data-i18n="profile">Profilim</span><span id="profile-badge" class="badge"></span></h3>
+      <form id="profile-form" class="list" style="gap:8px" autocomplete="on">
+        <input id="p-name" type="text" name="name" autocomplete="name" data-i18n-ph="name" placeholder="Ad, soyad">
+        <input id="p-phone" type="tel" name="phone" autocomplete="tel" data-i18n-ph="phone_required" placeholder="Telefon (məcburi)" required>
+        <input id="p-email" type="email" name="email" autocomplete="email" data-i18n-ph="email" placeholder="E-mail (istəyə bağlı)">
+        <button class="btn primary" type="submit" style="justify-content:center">💾 <span data-i18n="save">Yadda saxla</span></button>
+      </form>
+      <p class="hint" data-i18n="profile_hint"></p>
+    </section>
+
     <section class="card" id="priority-card">
       <label class="row" style="cursor:pointer;gap:10px;align-items:flex-start">
         <input type="checkbox" id="priority" style="width:20px;height:20px;margin-top:2px;accent-color:var(--orange);flex:none">
@@ -86,7 +97,37 @@
   const role = () => prio.checked ? 'priority' : 'standard';
   const paintPriority = () => $('#priority-card').style.borderColor = prio.checked ? 'var(--orange)' : '';
   paintPriority();
-  prio.onchange = () => { localStorage.setItem('priorityRole', prio.checked ? '1' : '0'); paintPriority(); fitted = false; refresh(); };
+  prio.onchange = () => { localStorage.setItem('priorityRole', prio.checked ? '1' : '0'); paintPriority(); fitted = false; refresh(); saveProfile(true); };
+
+  // Profile (no password): name + phone (+ e-mail). Lets dispatchers call back
+  // and lets the server text the nearest shelter even when mobile data is down.
+  let profile = null;
+  const pName = $('#p-name'), pPhone = $('#p-phone'), pEmail = $('#p-email');
+  function paintProfile() {
+    const b = $('#profile-badge');
+    if (profile?.phone) { b.textContent = '✓ ' + profile.phone; b.className = 'badge green'; }
+    else { b.textContent = t('anonymous'); b.className = 'badge orange'; }
+  }
+  try {
+    profile = (await api(`/citizens/${citizenId()}`)).citizen;
+    pName.value = profile.name || ''; pPhone.value = profile.phone || ''; pEmail.value = profile.email || '';
+    if (profile.role === 'priority' && !prio.checked) { prio.checked = true; localStorage.setItem('priorityRole', '1'); paintPriority(); }
+  } catch (_) { profile = null; }
+  paintProfile();
+  async function saveProfile(silent) {
+    if (!pPhone.value.trim()) { if (!silent) toast(t('phone_required'), 'warn'); return false; }
+    try {
+      profile = (await api(`/citizens/${citizenId()}/profile`, { method: 'PUT', body: { name: pName.value, phone: pPhone.value, email: pEmail.value, role: role() } })).citizen;
+      pPhone.value = profile.phone; paintProfile();
+      if (!silent) toast(t('profile_saved'), 'ok');
+      return true;
+    } catch (e) { toast(e.message, 'error'); return false; }
+  }
+  $('#profile-form').onsubmit = (e) => { e.preventDefault(); saveProfile(false); };
+
+  // Deep link from an SMS: /?lat=..&lng=..[&role=priority]
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('role') === 'priority' && !prio.checked) { prio.checked = true; localStorage.setItem('priorityRole', '1'); paintPriority(); }
 
   // zones → district select
   try {
@@ -107,6 +148,7 @@
   }
 
   map.on('click', e => setOrigin(e.latlng, false));
+  if (qs.get('lat') && qs.get('lng')) setOrigin({ lat: +qs.get('lat'), lng: +qs.get('lng') }, true);
   $('#gps').onclick = () => {
     if (!navigator.geolocation) return toast('GPS yoxdur', 'warn');
     navigator.geolocation.getCurrentPosition(
@@ -173,10 +215,12 @@
   $$('[data-sos]').forEach(btn => btn.onclick = async () => {
     if (!origin) return toast(t('no_location'), 'warn');
     btn.disabled = true;
+    if (!profile?.phone) toast(t('profile_missing'), 'warn', 7000); // SOS still goes through — never block it
     try {
       const r = await api('/sos', { method: 'POST', body: { citizen_id: citizenId(), role: role(), type: btn.dataset.sos, lat: origin.lat, lng: origin.lng } });
       if (r.sos.priority === 1) toast(`♿ ${t('priority_critical')} — ${t('sos_priority_sent')} · #${r.sos.id}`, 'warn', 8000);
       else toast(`${SOS_ICON[btn.dataset.sos]} ${t('sos_sent')} · #${r.sos.id}`, 'ok');
+      if (r.notification) toast(`📩 ${t('sms_sent')} → ${r.notification.to}${r.notification.status === 'simulated' ? ' (' + t('sms_simulated') + ')' : ''}: ${r.notification.message}`, 'info', 12000);
       L.circleMarker(origin, { radius: 14, color: '#ef4444', fillOpacity: .3 }).addTo(layers.routes);
     } catch (e) { toast(e.message, 'error'); } finally { btn.disabled = false; }
   });

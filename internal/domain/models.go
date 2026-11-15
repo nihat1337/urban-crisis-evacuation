@@ -122,6 +122,10 @@ type SOS struct {
 	Status    SOSStatus `json:"status"`
 	BrigadeID string    `json:"brigade_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	// Contact snapshot from the citizen profile at the time of the signal.
+	CitizenName  string `json:"citizen_name,omitempty"`
+	CitizenPhone string `json:"citizen_phone,omitempty"`
+	CitizenEmail string `json:"citizen_email,omitempty"`
 }
 
 type CitizenStatus string
@@ -147,6 +151,28 @@ type Citizen struct {
 	Status    CitizenStatus `json:"status"`
 	Location  *Point        `json:"location,omitempty"`
 	UpdatedAt time.Time     `json:"updated_at"`
+	// Optional profile: lets dispatchers call back and lets the system push
+	// SMS guidance that works even when mobile data is down. No password —
+	// an emergency app must never put a login between a person and SOS.
+	Name  string `json:"name,omitempty"`
+	Phone string `json:"phone,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
+// Notification is an outbound message (SMS) sent to a citizen.
+type Notification struct {
+	ID         string    `json:"id"`
+	CitizenID  string    `json:"citizen_id"`
+	SOSID      string    `json:"sos_id,omitempty"`
+	Channel    string    `json:"channel"` // sms
+	To         string    `json:"to"`
+	Message    string    `json:"message"`
+	Reason     string    `json:"reason"` // sos | reroute | manual
+	Provider   string    `json:"provider"`
+	ProviderID string    `json:"provider_id,omitempty"`
+	Status     string    `json:"status"` // sent | simulated | failed
+	Error      string    `json:"error,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type BrigadeStatus string

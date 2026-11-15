@@ -32,7 +32,12 @@ type Store interface {
 	ListSOS(ctx context.Context, since time.Time) ([]domain.SOS, error)
 
 	UpsertCitizen(ctx context.Context, c domain.Citizen) error
+	GetCitizen(ctx context.Context, id string) (domain.Citizen, error)
 	ListCitizens(ctx context.Context) ([]domain.Citizen, error)
+
+	CreateNotification(ctx context.Context, n domain.Notification) error
+	// ListNotifications returns the newest notifications first, at most limit (0 = 100).
+	ListNotifications(ctx context.Context, limit int) ([]domain.Notification, error)
 
 	ListBrigades(ctx context.Context) ([]domain.Brigade, error)
 	GetBrigade(ctx context.Context, id string) (domain.Brigade, error)

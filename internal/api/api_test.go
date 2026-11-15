@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nihat1337/urban-crisis-evacuation/internal/crisis"
@@ -223,5 +224,57 @@ func TestPrioritySOSAndAccessiblePlan(t *testing.T) {
 	_, out = do(t, "GET", srv.URL+"/api/v1/evacuation/plan?lat=40.3870&lng=49.8300", nil, "")
 	if out["accessible"] != false {
 		t.Fatalf("default plan must not be accessible-restricted: %v", out["accessible"])
+	}
+}
+
+func TestProfileAndSMSNotification(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Invalid phone is rejected; a local AZ number is normalised to +994.
+	resp, out := do(t, "PUT", srv.URL+"/api/v1/citizens/cit-1/profile", map[string]any{"name": "Leyla", "phone": "12"}, "")
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400 for bad phone, got %d %v", resp.StatusCode, out)
+	}
+	resp, out = do(t, "PUT", srv.URL+"/api/v1/citizens/cit-1/profile", map[string]any{"name": "Leyla", "phone": "050 123 45 67", "email": "l@example.com", "role": "priority"}, "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("profile: %d %v", resp.StatusCode, out)
+	}
+	c := out["citizen"].(map[string]any)
+	if c["phone"] != "+994501234567" || c["role"] != "priority" {
+		t.Fatalf("unexpected citizen %v", c)
+	}
+
+	// SOS from that citizen: role comes from the profile, SMS is sent with the nearest accessible shelter.
+	resp, out = do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{"citizen_id": "cit-1", "type": "medical", "lat": 40.3870, "lng": 49.8300}, "")
+	if resp.StatusCode != 201 {
+		t.Fatalf("sos: %d %v", resp.StatusCode, out)
+	}
+	sos := out["sos"].(map[string]any)
+	if sos["priority"] != float64(1) || sos["citizen_phone"] != "+994501234567" || sos["citizen_name"] != "Leyla" {
+		t.Fatalf("profile not applied to SOS: %v", sos)
+	}
+	n, _ := out["notification"].(map[string]any)
+	if n == nil || n["status"] != "simulated" || n["to"] != "+994501234567" {
+		t.Fatalf("expected simulated SMS, got %v", out["notification"])
+	}
+	msg := n["message"].(string)
+	if !strings.Contains(msg, "Leyla") || !strings.Contains(msg, "Zabitlər Parkı") || !strings.Contains(msg, "role=priority") {
+		t.Fatalf("unexpected SMS text: %s", msg)
+	}
+
+	// Anonymous SOS: no phone → no SMS, but the signal is still accepted.
+	resp, out = do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{"citizen_id": "anon-x", "type": "fire", "lat": 40.3870, "lng": 49.8300}, "")
+	if resp.StatusCode != 201 || out["notification"] != nil {
+		t.Fatalf("anonymous SOS must not send SMS: %d %v", resp.StatusCode, out["notification"])
+	}
+
+	// Dispatcher re-sends manually; journal lists both messages.
+	resp, out = do(t, "POST", srv.URL+"/api/v1/dispatch/sos/"+sos["id"].(string)+"/notify", nil, testKey)
+	if resp.StatusCode != 200 || out["notification"].(map[string]any)["reason"] != "manual" {
+		t.Fatalf("manual notify: %d %v", resp.StatusCode, out)
+	}
+	_, out = do(t, "GET", srv.URL+"/api/v1/dispatch/notifications", nil, testKey)
+	if len(out["notifications"].([]any)) != 2 {
+		t.Fatalf("expected 2 notifications, got %v", out["notifications"])
 	}
 }

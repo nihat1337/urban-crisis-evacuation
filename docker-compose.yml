@@ -40,6 +40,8 @@ services:
       SHELTER_WARN_PCT: ${SHELTER_WARN_PCT:-90}
       RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-20}
       DEFAULT_LANG: ${DEFAULT_LANG:-az}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:${PORT:-8080}}
+      NOTIFY_PROVIDER: ${NOTIFY_PROVIDER:-simulated}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     restart: unless-stopped
 

@@ -42,6 +42,11 @@ type Config struct {
 	RateLimitBurst int
 
 	DefaultLang string
+
+	// PublicURL is used in SMS texts for the route link the citizen can open.
+	PublicURL string
+	// NotifyProvider selects the SMS gateway: "simulated" (default) | future: "twilio".
+	NotifyProvider string
 }
 
 func Load() Config {
@@ -74,6 +79,9 @@ func Load() Config {
 		RateLimitBurst: envInt("RATE_LIMIT_BURST", 40),
 
 		DefaultLang: env("DEFAULT_LANG", "az"),
+
+		PublicURL:      strings.TrimRight(env("PUBLIC_URL", "http://localhost:"+env("PORT", "8080")), "/"),
+		NotifyProvider: env("NOTIFY_PROVIDER", "simulated"),
 	}
 }
 

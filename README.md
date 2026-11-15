@@ -41,6 +41,7 @@ Zəlzələ, güclü sel, sənaye qəzaları və ya kütləvi tədbirlər zamanı
 - Təhlükəsizlik statusu: *Təhlükəsizəm / Təxliyə edirəm / Köməyə ehtiyacım var*.
 - **Avtomatik alternativ marşrut**: yol bağlandıqda və ya məntəqə ≥ 90 % dolduqda server `route.invalidated` hadisəsi göndərir, vətəndaşın ekranı özü yenilənir.
 - **♿ Prioritet SOS (hərəkət məhdudiyyəti / xüsusi qayğı)**: rol aktiv olduqda SOS avtomatik **Kritik prioritet #1** alır və yalnız **panduslu, maneəsiz** (əlil arabası / tibbi nəqliyyat üçün əlçatan) məntəqə və marşrutlar təklif olunur — bax §7.1.
+- **Profil (parolsuz) + SMS bildirişi**: ad, **telefon** (məcburi), e-mail (istəyə bağlı). Qəsdən **hesab/parol yoxdur** — fövqəladə halda SOS həmişə bir klikdir, anonim SOS da qəbul olunur. Telefon varsa: dispeçer **zəng edə bilir** (📞), SOS gələn kimi sistem avtomatik **SMS** göndərir («ən yaxın məntəqə: …, 1.3 km, ~17 dəq, xəritə linki»), yol bağlananda/məntəqə dolanda **yeni SMS** gedir — mobil internet çöksə belə işləyir. SMS şlüzü `notify.Sender` interfeysidir: hazırda **simulyasiya** (log + dispeçer panelində jurnal), Twilio/operator şlüzü 1 faylla qoşulur.
 
 ### Modul 2 — Dispeçer modulu & analitik mühərrik
 - Canlı panel: zonalar üzrə SOS sayı, məntəqələrin doluluğu, briqadaların statusu, yolların vəziyyəti — hamısı xəritədə.
@@ -127,6 +128,8 @@ Bütün cavablar JSON; xəta formatı `{"error":{"code":"...","message":"..."}}`
 | GET | `/api/v1/evacuation/plan?lat&lng` \| `?zone=` [`&role=priority`] | Tövsiyə olunan marşrut + alternativlər; `role=priority` → yalnız ♿ əlçatan məntəqə/yollar |
 | POST | `/api/v1/sos` | `{"citizen_id","role":"standard\|priority","type":"fire\|collapse\|flood\|medical","lat","lng","message"}` — `priority` → `priority: 1` |
 | POST | `/api/v1/citizens/{id}/status` | `{"status":"safe\|evacuating\|need_help","role","lat","lng"}` |
+| PUT | `/api/v1/citizens/{id}/profile` | `{"name","phone"(məcburi, +994-ə normallaşır),"email","role"}` — parolsuz profil |
+| GET | `/api/v1/citizens/{id}` | Öz profilini oxumaq |
 | GET | `/api/v1/roads` | Simulyasiya olunmuş yol/nəqliyyat endpointi |
 | GET | `/api/v1/events` | **SSE** canlı hadisələr |
 | GET | `/api/v1/i18n`, `/api/v1/i18n/{lang}` | Dillər və tərcümə lüğəti |
@@ -138,13 +141,15 @@ Bütün cavablar JSON; xəta formatı `{"error":{"code":"...","message":"..."}}`
 | GET | `/api/v1/dispatch/overview` | Panelin tam vəziyyəti (zonalar, SOS, məntəqələr, briqadalar, həyəcanlar, yollar) |
 | GET | `/api/v1/dispatch/sos?since_minutes=30` | SOS siyahısı |
 | POST | `/api/v1/dispatch/sos/{id}/resolve` | SOS-u bağla, briqadanı azad et |
+| POST | `/api/v1/dispatch/sos/{id}/notify` | Vətəndaşa ən yaxın məntəqəni **SMS**-lə göndər (bir klik) |
+| GET | `/api/v1/dispatch/notifications` | Göndərilən SMS-lərin jurnalı |
 | PATCH | `/api/v1/dispatch/shelters/{id}` | `{"occupancy":580}` / `{"active":false}` → həyəcan yoxlanır |
 | PATCH | `/api/v1/dispatch/roads/{id}` | `{"status":"blocked\|congested\|open"}` → vətəndaşlar yenidən marşrutlanır |
 | PATCH | `/api/v1/dispatch/brigades/{id}` | `{"status":"available\|en_route\|busy","lat","lng"}` |
 | POST | `/api/v1/dispatch/alerts/{id}/execute` | `{"action":"dispatch_brigade\|open_shelter"}` — bir kliklə qərar |
 
 ### SSE hadisələri
-`sos.created` · `sos.updated` · `alert.created` · `alert.executed` · `shelter.updated` · `shelter.created` · `road.updated` · `brigade.updated` · `citizen.updated` · **`route.invalidated`** (`reason: road_blocked | shelter_full | shelter_opened | road_updated`)
+`sos.created` · `sos.priority` · `sos.updated` · `alert.created` · `alert.executed` · `shelter.updated` · `shelter.created` · `road.updated` · `brigade.updated` · `citizen.updated` · `notification.sent` · **`route.invalidated`** (`reason: road_blocked | shelter_full | shelter_opened | road_updated`)
 
 ### Nümunə
 
@@ -178,6 +183,8 @@ curl -s -X POST localhost:8080/api/v1/dispatch/alerts/<ID>/execute \
 | `SHELTER_WARN_PCT` | `90` | ≥ bu → məntəqə tövsiyə olunmur, marşrut dəyişir |
 | `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` | `20` / `40` | IP üzrə sorğu limiti |
 | `DEFAULT_LANG` | `az` | Standart dil |
+| `PUBLIC_URL` | `http://localhost:8080` | SMS-dəki xəritə linkinin kökü |
+| `NOTIFY_PROVIDER` | `simulated` | SMS şlüzü (`simulated`; Twilio/operator üçün `notify.Sender` implementasiyası) |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
 ## 7. Arxitekturanın elastikliyi — ani texniki dəyişikliklərə hazırlıq
@@ -192,6 +199,7 @@ Münsiflər tərəfindən final zamanı dəyişikliklər elan oluna bilər. Sist
 | **Yeni marşrut provayderi** (Google, Mapbox, GraphHopper) | `routing.Router` interfeysi, `Chain` içində növbəyə qoşulur — **Google Directions artıq qoşulub** (`internal/routing/google.go`, açar varsa birinci sırada) | `internal/routing/<yeni>.go` |
 | **Xəritə provayderinin dəyişməsi** | Base layer `makeMap()`-da tək yerdədir: Google Maps (açar varsa) → OpenStreetMap fallback; marker/marşrut kodu Leaflet-dir, dəyişmir | `web/static/common.js` |
 | **Yeni dil** | `internal/i18n/locales/<kod>.json` — UI və API mesajları avtomatik | 1 JSON fayl |
+| **Real SMS / push şlüzü** (Twilio, operator SMPP, FCM) | `notify.Sender` interfeysi; indi simulyasiya provayderi loglayır və jurnal yazır | `internal/notify/<yeni>.go` + `main.go`-da 1 sətir |
 | **Yeni SOS növü / status** | `domain` sabitləri + `Valid()` + locale açarı | 3 sətir |
 | **Alqoritm hədlərinin dəyişməsi** (məs. 3 SOS / 3 dəq / 300 m / 90 %) | Hamısı env dəyişənidir | `docker compose up` ilə yenidən başlat, kod dəyişmir |
 | **Yüksək yük** | IP üzrə token-bucket rate limit, body limit 1 MB, SSE non-blocking, Go goroutine-ları, stateless app → `docker compose up --scale app=3` | env |

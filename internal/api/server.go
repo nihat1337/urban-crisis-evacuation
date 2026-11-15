@@ -57,6 +57,8 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 	mux.HandleFunc("GET /api/v1/evacuation/plan", s.plan)
 	mux.HandleFunc("POST /api/v1/sos", s.createSOS)
 	mux.HandleFunc("POST /api/v1/citizens/{id}/status", s.citizenStatus)
+	mux.HandleFunc("GET /api/v1/citizens/{id}", s.getCitizen)
+	mux.HandleFunc("PUT /api/v1/citizens/{id}/profile", s.putProfile)
 	mux.HandleFunc("GET /api/v1/roads", s.roads)
 	mux.Handle("GET /api/v1/events", hub)
 
@@ -65,6 +67,8 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 	mux.Handle("GET /api/v1/dispatch/overview", s.requireKey(s.overview))
 	mux.Handle("GET /api/v1/dispatch/sos", s.requireKey(s.listSOS))
 	mux.Handle("POST /api/v1/dispatch/sos/{id}/resolve", s.requireKey(s.resolveSOS))
+	mux.Handle("POST /api/v1/dispatch/sos/{id}/notify", s.requireKey(s.notifySOS))
+	mux.Handle("GET /api/v1/dispatch/notifications", s.requireKey(s.listNotifications))
 	mux.Handle("PATCH /api/v1/dispatch/shelters/{id}", s.requireKey(s.patchShelter))
 	mux.Handle("PATCH /api/v1/dispatch/roads/{id}", s.requireKey(s.patchRoad))
 	mux.Handle("PATCH /api/v1/dispatch/brigades/{id}", s.requireKey(s.patchBrigade))
@@ -254,12 +258,54 @@ func (s *Server) createSOS(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	sos, alert, err := s.svc.SubmitSOS(r.Context(), in)
+	res, err := s.svc.SubmitSOS(r.Context(), in)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"sos": sos, "alert": alert})
+	writeJSON(w, http.StatusCreated, res)
+}
+
+func (s *Server) getCitizen(w http.ResponseWriter, r *http.Request) {
+	c, err := s.svc.GetCitizen(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"citizen": c})
+}
+
+func (s *Server) putProfile(w http.ResponseWriter, r *http.Request) {
+	var in service.ProfileInput
+	if err := decode(r, &in); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	c, err := s.svc.UpsertProfile(r.Context(), r.PathValue("id"), in)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"citizen": c})
+}
+
+func (s *Server) notifySOS(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.NotifySOS(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notification": n})
+}
+
+func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	list, err := s.svc.ListNotifications(r.Context(), limit)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": list})
 }
 
 func (s *Server) citizenStatus(w http.ResponseWriter, r *http.Request) {

@@ -9,12 +9,14 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/nihat1337/urban-crisis-evacuation/internal/crisis"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/domain"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/events"
+	"github.com/nihat1337/urban-crisis-evacuation/internal/notify"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/routing"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/store"
 )
@@ -52,6 +54,11 @@ type Service struct {
 	engine *crisis.Engine
 	hub    *events.Hub
 	log    *slog.Logger
+
+	notifier  notify.Sender
+	publicURL string
+	notifyMu  sync.Mutex
+	lastSMS   map[string]time.Time // citizen id → last reroute SMS (rate limit)
 }
 
 func New(cfg Config, st store.Store, rt routing.Router, eng *crisis.Engine, hub *events.Hub, log *slog.Logger) *Service {
@@ -61,7 +68,23 @@ func New(cfg Config, st store.Store, rt routing.Router, eng *crisis.Engine, hub 
 	if cfg.ShelterWarnPct <= 0 {
 		cfg.ShelterWarnPct = 90
 	}
-	return &Service{cfg: cfg, store: st, router: rt, engine: eng, hub: hub, log: log}
+	return &Service{cfg: cfg, store: st, router: rt, engine: eng, hub: hub, log: log,
+		notifier: notify.NewLogSender(log), publicURL: "http://localhost:8080", lastSMS: map[string]time.Time{}}
+}
+
+// WithNotifier swaps the SMS gateway and the public URL used in message links.
+func (s *Service) WithNotifier(n notify.Sender, publicURL string) *Service {
+	if n != nil {
+		s.notifier = n
+	}
+	if publicURL != "" {
+		s.publicURL = strings.TrimRight(publicURL, "/")
+	}
+	return s
+}
+
+func (s *Service) NotifyStatus() map[string]any {
+	return map[string]any{"provider": s.notifier.Name(), "simulated": s.notifier.Simulated()}
 }
 
 func (s *Service) StoreName() string { return s.store.Name() }
@@ -264,18 +287,85 @@ type SOSInput struct {
 	Message   string             `json:"message"`
 }
 
-// SubmitSOS stores the signal, marks the citizen as needing help, and runs the
-// crisis engine. A signal from a priority-role citizen (reduced mobility /
-// special care) is automatically escalated to critical priority (#1).
-func (s *Service) SubmitSOS(ctx context.Context, in SOSInput) (domain.SOS, *domain.Alert, error) {
-	if !in.Type.Valid() {
-		return domain.SOS{}, nil, invalid("invalid_sos_type")
+// ProfileInput is the optional citizen profile. No password by design: an
+// emergency app must never put a login between a person and the SOS button.
+type ProfileInput struct {
+	Name  string             `json:"name"`
+	Phone string             `json:"phone"`
+	Email string             `json:"email"`
+	Role  domain.CitizenRole `json:"role"`
+}
+
+// UpsertProfile saves name/phone/email (phone required, normalised to +994…)
+// while keeping the citizen's current status and location.
+func (s *Service) UpsertProfile(ctx context.Context, id string, in ProfileInput) (domain.Citizen, error) {
+	if id == "" {
+		return domain.Citizen{}, invalid("invalid_json")
+	}
+	phone, ok := notify.NormalizePhone(in.Phone)
+	if !ok {
+		return domain.Citizen{}, invalid("invalid_phone")
+	}
+	if !notify.ValidEmail(in.Email) {
+		return domain.Citizen{}, invalid("invalid_email")
 	}
 	if in.Role == "" {
 		in.Role = domain.RoleStandard
 	}
 	if !in.Role.Valid() {
-		return domain.SOS{}, nil, invalid("invalid_role")
+		return domain.Citizen{}, invalid("invalid_role")
+	}
+	c, err := s.store.GetCitizen(ctx, id)
+	if err != nil {
+		c = domain.Citizen{ID: id, Status: domain.CitizenSafe}
+	}
+	c.Name = strings.TrimSpace(in.Name)
+	if len(c.Name) > 80 {
+		c.Name = c.Name[:80]
+	}
+	c.Phone = phone
+	c.Email = strings.TrimSpace(in.Email)
+	c.Role = in.Role
+	c.UpdatedAt = time.Now().UTC()
+	if err := s.store.UpsertCitizen(ctx, c); err != nil {
+		return domain.Citizen{}, err
+	}
+	s.hub.Publish("citizen.updated", c)
+	return c, nil
+}
+
+func (s *Service) GetCitizen(ctx context.Context, id string) (domain.Citizen, error) {
+	return s.store.GetCitizen(ctx, id)
+}
+
+// SOSResult is what a citizen gets back: the stored signal, an alert if the
+// crisis rule fired, and the SMS that was pushed to their phone (if any).
+type SOSResult struct {
+	SOS          domain.SOS           `json:"sos"`
+	Alert        *domain.Alert        `json:"alert"`
+	Notification *domain.Notification `json:"notification"`
+}
+
+// SubmitSOS stores the signal, marks the citizen as needing help, runs the
+// crisis engine and — when the citizen has a phone — texts them the nearest
+// (accessible, for priority citizens) assembly point. A signal from a
+// priority-role citizen is automatically escalated to critical priority (#1).
+func (s *Service) SubmitSOS(ctx context.Context, in SOSInput) (SOSResult, error) {
+	if !in.Type.Valid() {
+		return SOSResult{}, invalid("invalid_sos_type")
+	}
+	var profile domain.Citizen
+	if in.CitizenID != "" {
+		profile, _ = s.store.GetCitizen(ctx, in.CitizenID)
+	}
+	if in.Role == "" {
+		in.Role = profile.Role
+	}
+	if in.Role == "" {
+		in.Role = domain.RoleStandard
+	}
+	if !in.Role.Valid() {
+		return SOSResult{}, invalid("invalid_role")
 	}
 	priority := domain.PriorityNormal
 	if in.Role == domain.RolePriority {
@@ -287,7 +377,7 @@ func (s *Service) SubmitSOS(ctx context.Context, in SOSInput) (domain.SOS, *doma
 	}
 	o, zid, err := s.resolveOrigin(ctx, origin, in.ZoneID)
 	if err != nil {
-		return domain.SOS{}, nil, err
+		return SOSResult{}, err
 	}
 	if in.CitizenID == "" {
 		in.CitizenID = "anon-" + domain.NewID()
@@ -299,27 +389,155 @@ func (s *Service) SubmitSOS(ctx context.Context, in SOSInput) (domain.SOS, *doma
 	sos := domain.SOS{
 		ID: domain.NewID(), CitizenID: in.CitizenID, Role: in.Role, Priority: priority, Type: in.Type, ZoneID: zid,
 		Location: o, Message: in.Message, Status: domain.SOSOpen, CreatedAt: now,
+		CitizenName: profile.Name, CitizenPhone: profile.Phone, CitizenEmail: profile.Email,
 	}
 	if err := s.store.CreateSOS(ctx, sos); err != nil {
-		return domain.SOS{}, nil, err
+		return SOSResult{}, err
 	}
-	_ = s.store.UpsertCitizen(ctx, domain.Citizen{ID: in.CitizenID, Role: in.Role, Status: domain.CitizenNeedHelp, Location: &o, UpdatedAt: now})
+	profile.ID = in.CitizenID
+	profile.Role = in.Role
+	profile.Status = domain.CitizenNeedHelp
+	profile.Location = &o
+	profile.UpdatedAt = now
+	_ = s.store.UpsertCitizen(ctx, profile)
 	s.hub.Publish("sos.created", sos)
 	if priority == domain.PriorityCritical {
 		s.log.Warn("PRIORITY SOS", "id", sos.ID, "zone", sos.ZoneID, "type", sos.Type)
 		s.hub.Publish("sos.priority", sos)
 	}
+	res := SOSResult{SOS: sos}
+
+	if sos.CitizenPhone != "" {
+		if n, err := s.notifyShelter(ctx, sos, "sos"); err != nil {
+			s.log.Warn("sms failed", "err", err)
+		} else {
+			res.Notification = n
+		}
+	}
 
 	alert, err := s.engine.OnSOS(ctx, sos)
 	if err != nil {
 		s.log.Error("crisis engine", "err", err)
-		return sos, nil, nil
+		return res, nil
 	}
 	if alert != nil {
 		s.log.Warn("RED ALERT", "kind", alert.Kind, "zone", alert.ZoneID, "signals", alert.SignalCount)
 		s.hub.Publish("alert.created", alert)
+		res.Alert = alert
 	}
-	return sos, alert, nil
+	return res, nil
+}
+
+// notifyShelter texts the citizen behind an SOS the nearest assembly point
+// (accessible-only for priority citizens) with distance, time and a map link.
+func (s *Service) notifyShelter(ctx context.Context, sos domain.SOS, reason string) (*domain.Notification, error) {
+	if sos.CitizenPhone == "" {
+		return nil, conflict("no_phone")
+	}
+	accessible := sos.Role == domain.RolePriority
+	plan, err := s.Plan(ctx, &sos.Location, sos.ZoneID, accessible)
+	if err != nil {
+		return nil, err
+	}
+	msg := s.composeShelterSMS(sos, plan, reason)
+	n := domain.Notification{
+		ID: domain.NewID(), CitizenID: sos.CitizenID, SOSID: sos.ID, Channel: "sms", To: sos.CitizenPhone,
+		Message: msg, Reason: reason, Provider: s.notifier.Name(), CreatedAt: time.Now().UTC(),
+	}
+	pid, err := s.notifier.Send(ctx, sos.CitizenPhone, msg)
+	n.ProviderID = pid
+	switch {
+	case err != nil:
+		n.Status = "failed"
+		n.Error = err.Error()
+	case s.notifier.Simulated():
+		n.Status = "simulated"
+	default:
+		n.Status = "sent"
+	}
+	if err := s.store.CreateNotification(ctx, n); err != nil {
+		return nil, err
+	}
+	s.hub.Publish("notification.sent", n)
+	return &n, nil
+}
+
+func (s *Service) composeShelterSMS(sos domain.SOS, plan domain.EvacuationPlan, reason string) string {
+	var b strings.Builder
+	b.WriteString("FHN 112: ")
+	if sos.CitizenName != "" {
+		b.WriteString(sos.CitizenName + ", ")
+	}
+	if reason == "reroute" {
+		b.WriteString("marşrut dəyişdi! ")
+	}
+	if plan.Recommended == nil {
+		b.WriteString("hazırda uyğun toplanış məntəqəsi yoxdur, dispeçer sizinlə əlaqə saxlayacaq.")
+		return b.String()
+	}
+	r := plan.Recommended
+	b.WriteString("ən yaxın təhlükəsiz məntəqə: " + r.Shelter.Name)
+	if r.Route != nil {
+		km := r.Route.DistanceM
+		if km >= 1000 {
+			b.WriteString(fmt.Sprintf(" — %.1f km, ~%d dəq", km/1000, int(math.Ceil(r.Route.DurationS/60))))
+		} else {
+			b.WriteString(fmt.Sprintf(" — %.0f m, ~%d dəq", km, int(math.Ceil(r.Route.DurationS/60))))
+		}
+		if r.Route.Accessible {
+			b.WriteString(" (♿ panduslu marşrut)")
+		}
+	}
+	b.WriteString(fmt.Sprintf(". Doluluq %.0f%%. Xəritə: %s/?lat=%.5f&lng=%.5f", r.OccupancyPct, s.publicURL, sos.Location.Lat, sos.Location.Lng))
+	if plan.Accessible {
+		b.WriteString("&role=priority")
+	}
+	b.WriteString(" . Yol bağlanarsa yeni SMS alacaqsınız.")
+	return b.String()
+}
+
+// NotifySOS is the dispatcher's one-click "text them the nearest shelter".
+func (s *Service) NotifySOS(ctx context.Context, sosID string) (*domain.Notification, error) {
+	sos, err := s.store.GetSOS(ctx, sosID)
+	if err != nil {
+		return nil, err
+	}
+	return s.notifyShelter(ctx, sos, "manual")
+}
+
+// renotifyOpenSOS re-texts everyone with an open SOS and a phone number after
+// the road network or shelter capacity changed. Rate-limited per citizen.
+func (s *Service) renotifyOpenSOS(reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	list, err := s.store.ListSOS(ctx, time.Now().UTC().Add(-2*time.Hour))
+	if err != nil {
+		return
+	}
+	for _, sos := range list {
+		if sos.Status == domain.SOSResolved || sos.CitizenPhone == "" {
+			continue
+		}
+		s.notifyMu.Lock()
+		last, seen := s.lastSMS[sos.CitizenID]
+		if seen && time.Since(last) < 2*time.Minute {
+			s.notifyMu.Unlock()
+			continue
+		}
+		s.lastSMS[sos.CitizenID] = time.Now()
+		s.notifyMu.Unlock()
+		if _, err := s.notifyShelter(ctx, sos, reason); err != nil {
+			s.log.Warn("reroute sms failed", "citizen", sos.CitizenID, "err", err)
+		}
+	}
+}
+
+func (s *Service) ListNotifications(ctx context.Context, limit int) ([]domain.Notification, error) {
+	list, err := s.store.ListNotifications(ctx, limit)
+	if list == nil {
+		list = []domain.Notification{}
+	}
+	return list, err
 }
 
 func (s *Service) UpdateCitizenStatus(ctx context.Context, id string, status domain.CitizenStatus, role domain.CitizenRole, loc *domain.Point) (domain.Citizen, error) {
@@ -371,6 +589,7 @@ func (s *Service) SetShelter(ctx context.Context, id string, occupancy *int, act
 		s.hub.Publish("route.invalidated", map[string]any{
 			"reason": "shelter_full", "shelter_id": sh.ID, "shelter_name": sh.Name, "occupancy_pct": sh.OccupancyPct(),
 		})
+		go s.renotifyOpenSOS("reroute")
 	}
 	alert, err := s.engine.OnShelter(ctx, sh)
 	if err != nil {
@@ -402,6 +621,9 @@ func (s *Service) SetRoadStatus(ctx context.Context, id string, status domain.Ro
 		reason = "road_blocked"
 	}
 	s.hub.Publish("route.invalidated", map[string]any{"reason": reason, "road_id": r.ID, "road_name": r.Name, "status": r.Status})
+	if status == domain.RoadBlocked {
+		go s.renotifyOpenSOS("reroute")
+	}
 	return r, nil
 }
 
@@ -586,19 +808,24 @@ type Overview struct {
 	Brigades    []domain.Brigade `json:"brigades"`
 	Alerts      []domain.Alert   `json:"alerts"`
 	Roads       []domain.Road    `json:"roads"`
-	Citizens    map[string]int   `json:"citizens"`
-	Routing     routing.Status   `json:"routing"`
-	Store       string           `json:"store"`
-	Crisis      crisis.Config    `json:"crisis"`
-	Thresholds  map[string]any   `json:"thresholds"`
+	Citizens      map[string]int        `json:"citizens"`
+	Notifications []domain.Notification `json:"notifications"`
+	Notify        map[string]any        `json:"notify"`
+	Routing       routing.Status        `json:"routing"`
+	Store         string                `json:"store"`
+	Crisis        crisis.Config         `json:"crisis"`
+	Thresholds    map[string]any        `json:"thresholds"`
 }
 
 // Overview is the single payload behind the live dispatcher panel.
 func (s *Service) Overview(ctx context.Context) (Overview, error) {
 	now := time.Now().UTC()
 	ov := Overview{GeneratedAt: now, Store: s.store.Name(), Routing: s.RoutingStatus(), Crisis: s.engine.Config(),
-		Citizens: map[string]int{}, Thresholds: map[string]any{"shelter_warn_pct": s.cfg.ShelterWarnPct}}
+		Citizens: map[string]int{}, Notify: s.NotifyStatus(), Thresholds: map[string]any{"shelter_warn_pct": s.cfg.ShelterWarnPct}}
 	var err error
+	if ov.Notifications, err = s.ListNotifications(ctx, 30); err != nil {
+		return ov, err
+	}
 	if ov.Shelters, err = s.store.ListShelters(ctx); err != nil {
 		return ov, err
 	}

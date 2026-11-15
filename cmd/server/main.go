@@ -15,6 +15,7 @@ import (
 	"github.com/nihat1337/urban-crisis-evacuation/internal/config"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/crisis"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/events"
+	"github.com/nihat1337/urban-crisis-evacuation/internal/notify"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/routing"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/seed"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/service"
@@ -56,7 +57,9 @@ func main() {
 		Window: cfg.CrisisWindow, RadiusM: cfg.CrisisRadiusM,
 		MinSignals: cfg.CrisisMinSignals, ShelterAlertPct: cfg.ShelterAlertPct,
 	}, st)
-	svc := service.New(service.Config{ShelterWarnPct: cfg.ShelterWarnPct, MaxAlternatives: 2}, st, router, engine, hub, log)
+	svc := service.New(service.Config{ShelterWarnPct: cfg.ShelterWarnPct, MaxAlternatives: 2}, st, router, engine, hub, log).
+		WithNotifier(notify.NewLogSender(log), cfg.PublicURL) // NOTIFY_PROVIDER=simulated; a real gateway plugs in here
+	log.Info("notifications", "provider", cfg.NotifyProvider, "public_url", cfg.PublicURL)
 
 	handler := api.New(api.Config{
 		DispatcherKey: cfg.DispatcherKey, RateLimitRPS: cfg.RateLimitRPS, RateLimitBurst: cfg.RateLimitBurst,

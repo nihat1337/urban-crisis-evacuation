@@ -101,6 +101,20 @@ ALTER TABLE citizens ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'standa
 ALTER TABLE sos      ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'standard';
 ALTER TABLE sos      ADD COLUMN IF NOT EXISTS priority int NOT NULL DEFAULT 2;
 CREATE INDEX IF NOT EXISTS sos_priority_idx ON sos (priority, created_at DESC);
+-- Citizen profile + SMS notifications module.
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS name  text NOT NULL DEFAULT '';
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS phone text NOT NULL DEFAULT '';
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS email text NOT NULL DEFAULT '';
+ALTER TABLE sos ADD COLUMN IF NOT EXISTS citizen_name  text NOT NULL DEFAULT '';
+ALTER TABLE sos ADD COLUMN IF NOT EXISTS citizen_phone text NOT NULL DEFAULT '';
+ALTER TABLE sos ADD COLUMN IF NOT EXISTS citizen_email text NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS notifications (
+	id text PRIMARY KEY, citizen_id text NOT NULL, sos_id text NOT NULL DEFAULT '',
+	channel text NOT NULL, to_addr text NOT NULL, message text NOT NULL, reason text NOT NULL,
+	provider text NOT NULL, provider_id text NOT NULL DEFAULT '', status text NOT NULL,
+	error text NOT NULL DEFAULT '', created_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notifications_created_idx ON notifications (created_at DESC);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -186,11 +200,12 @@ func (s *Store) UpsertShelter(ctx context.Context, sh domain.Shelter) error {
 
 // --- sos ---
 
-const sosCols = `id, citizen_id, type, zone_id, lat, lng, message, status, brigade_id, created_at, role, priority`
+const sosCols = `id, citizen_id, type, zone_id, lat, lng, message, status, brigade_id, created_at, role, priority, citizen_name, citizen_phone, citizen_email`
 
 func scanSOS(row pgx.Row) (domain.SOS, error) {
 	var v domain.SOS
-	err := row.Scan(&v.ID, &v.CitizenID, &v.Type, &v.ZoneID, &v.Location.Lat, &v.Location.Lng, &v.Message, &v.Status, &v.BrigadeID, &v.CreatedAt, &v.Role, &v.Priority)
+	err := row.Scan(&v.ID, &v.CitizenID, &v.Type, &v.ZoneID, &v.Location.Lat, &v.Location.Lng, &v.Message, &v.Status, &v.BrigadeID, &v.CreatedAt, &v.Role, &v.Priority,
+		&v.CitizenName, &v.CitizenPhone, &v.CitizenEmail)
 	return v, err
 }
 
@@ -201,8 +216,9 @@ func (s *Store) CreateSOS(ctx context.Context, v domain.SOS) error {
 	if v.Priority == 0 {
 		v.Priority = domain.PriorityNormal
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO sos (`+sosCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		v.ID, v.CitizenID, v.Type, v.ZoneID, v.Location.Lat, v.Location.Lng, v.Message, v.Status, v.BrigadeID, v.CreatedAt, v.Role, v.Priority)
+	_, err := s.pool.Exec(ctx, `INSERT INTO sos (`+sosCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		v.ID, v.CitizenID, v.Type, v.ZoneID, v.Location.Lat, v.Location.Lng, v.Message, v.Status, v.BrigadeID, v.CreatedAt, v.Role, v.Priority,
+		v.CitizenName, v.CitizenPhone, v.CitizenEmail)
 	return err
 }
 
@@ -249,29 +265,73 @@ func (s *Store) UpsertCitizen(ctx context.Context, c domain.Citizen) error {
 	if c.Role == "" {
 		c.Role = domain.RoleStandard
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO citizens (id, status, lat, lng, updated_at, role) VALUES ($1,$2,$3,$4,$5,$6)
-		ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, lat=EXCLUDED.lat, lng=EXCLUDED.lng, updated_at=EXCLUDED.updated_at, role=EXCLUDED.role`,
-		c.ID, c.Status, lat, lng, c.UpdatedAt, c.Role)
+	_, err := s.pool.Exec(ctx, `INSERT INTO citizens (id, status, lat, lng, updated_at, role, name, phone, email) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, lat=EXCLUDED.lat, lng=EXCLUDED.lng, updated_at=EXCLUDED.updated_at,
+		role=EXCLUDED.role, name=EXCLUDED.name, phone=EXCLUDED.phone, email=EXCLUDED.email`,
+		c.ID, c.Status, lat, lng, c.UpdatedAt, c.Role, c.Name, c.Phone, c.Email)
 	return err
 }
 
+const citizenCols = `id, status, lat, lng, updated_at, role, name, phone, email`
+
+func scanCitizen(row pgx.Row) (domain.Citizen, error) {
+	var c domain.Citizen
+	var lat, lng *float64
+	err := row.Scan(&c.ID, &c.Status, &lat, &lng, &c.UpdatedAt, &c.Role, &c.Name, &c.Phone, &c.Email)
+	if lat != nil && lng != nil {
+		c.Location = &domain.Point{Lat: *lat, Lng: *lng}
+	}
+	return c, err
+}
+
+func (s *Store) GetCitizen(ctx context.Context, id string) (domain.Citizen, error) {
+	c, err := scanCitizen(s.pool.QueryRow(ctx, `SELECT `+citizenCols+` FROM citizens WHERE id=$1`, id))
+	return c, wrapNotFound(err)
+}
+
 func (s *Store) ListCitizens(ctx context.Context) ([]domain.Citizen, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, status, lat, lng, updated_at, role FROM citizens ORDER BY updated_at DESC`)
+	rows, err := s.pool.Query(ctx, `SELECT `+citizenCols+` FROM citizens ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []domain.Citizen
 	for rows.Next() {
-		var c domain.Citizen
-		var lat, lng *float64
-		if err := rows.Scan(&c.ID, &c.Status, &lat, &lng, &c.UpdatedAt, &c.Role); err != nil {
+		c, err := scanCitizen(rows)
+		if err != nil {
 			return nil, err
 		}
-		if lat != nil && lng != nil {
-			c.Location = &domain.Point{Lat: *lat, Lng: *lng}
-		}
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// --- notifications ---
+
+const notifCols = `id, citizen_id, sos_id, channel, to_addr, message, reason, provider, provider_id, status, error, created_at`
+
+func (s *Store) CreateNotification(ctx context.Context, n domain.Notification) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO notifications (`+notifCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		n.ID, n.CitizenID, n.SOSID, n.Channel, n.To, n.Message, n.Reason, n.Provider, n.ProviderID, n.Status, n.Error, n.CreatedAt)
+	return err
+}
+
+func (s *Store) ListNotifications(ctx context.Context, limit int) ([]domain.Notification, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+notifCols+` FROM notifications ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Notification
+	for rows.Next() {
+		var n domain.Notification
+		if err := rows.Scan(&n.ID, &n.CitizenID, &n.SOSID, &n.Channel, &n.To, &n.Message, &n.Reason, &n.Provider, &n.ProviderID, &n.Status, &n.Error, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
 	}
 	return out, rows.Err()
 }

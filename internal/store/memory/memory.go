@@ -21,6 +21,7 @@ type Store struct {
 	brigades map[string]domain.Brigade
 	roads    map[string]domain.Road
 	alerts   map[string]domain.Alert
+	notifs   []domain.Notification
 }
 
 var _ store.Store = (*Store)(nil)
@@ -136,6 +137,39 @@ func (s *Store) UpsertCitizen(_ context.Context, c domain.Citizen) error {
 	defer s.mu.Unlock()
 	s.citizens[c.ID] = c
 	return nil
+}
+
+func (s *Store) GetCitizen(_ context.Context, id string) (domain.Citizen, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.citizens[id]
+	if !ok {
+		return domain.Citizen{}, store.ErrNotFound
+	}
+	return v, nil
+}
+
+func (s *Store) CreateNotification(_ context.Context, n domain.Notification) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifs = append(s.notifs, n)
+	if len(s.notifs) > 1000 {
+		s.notifs = s.notifs[len(s.notifs)-1000:]
+	}
+	return nil
+}
+
+func (s *Store) ListNotifications(_ context.Context, limit int) ([]domain.Notification, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]domain.Notification, 0, limit)
+	for i := len(s.notifs) - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, s.notifs[i])
+	}
+	return out, nil
 }
 
 func (s *Store) ListCitizens(context.Context) ([]domain.Citizen, error) {
