@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nihat1337/urban-crisis-evacuation/internal/auth"
+	"github.com/nihat1337/urban-crisis-evacuation/internal/dispatch"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/domain"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/events"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/i18n"
@@ -36,6 +37,9 @@ type Config struct {
 	TrustProxy    bool
 	SOSRatePerMin float64 // POST /api/v1/sos per client IP
 	SOSBurst      int
+
+	Dispatch *dispatch.Service
+	DevMode  bool
 }
 
 type Server struct {
@@ -46,6 +50,7 @@ type Server struct {
 	limiter    *limiter // all API traffic, per IP
 	sosLimiter *limiter // stricter, SOS only
 	metrics    *metrics
+	dispatch   *dispatch.Service
 	started    time.Time
 }
 
@@ -59,7 +64,7 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 	if cfg.SOSBurst <= 0 {
 		cfg.SOSBurst = 5
 	}
-	s := &Server{cfg: cfg, svc: svc, hub: hub, log: log, started: time.Now(),
+	s := &Server{cfg: cfg, svc: svc, hub: hub, log: log, dispatch: cfg.Dispatch, started: time.Now(),
 		limiter: newLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst), sosLimiter: newLimiter(cfg.SOSRatePerMin/60, cfg.SOSBurst),
 		metrics: newMetrics(20000)}
 	mux := http.NewServeMux()
@@ -101,6 +106,25 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 	mux.Handle("PATCH /api/v1/dispatch/brigades/{id}", s.requireRole(auth.RoleAdmin, s.patchBrigade))
 	mux.Handle("POST /api/v1/dispatch/alerts/{id}/execute", s.requireRole(auth.RoleAdmin, s.executeAlert))
 	mux.Handle("POST /api/v1/dispatch/chaos", s.requireRole(auth.RoleAdmin, s.chaos))
+
+	// SMS evacuation module. Both prefixes are exposed: the spec path used by
+	// curl and the /api/v1 path used by the web app. Like every other dispatcher
+	// endpoint they require a JWT (or X-Dispatcher-Key): anyone may read the
+	// active districts (viewer), only an operator may send mass SMS, and the
+	// demo-data helpers are admin-only.
+	if s.dispatch != nil {
+		for _, pre := range []string{"/api", "/api/v1"} {
+			mux.Handle("GET "+pre+"/dispatch/active-zones", s.requireRole(auth.RoleViewer, s.activeZones))
+			mux.Handle("POST "+pre+"/dispatch/zones/{zoneId}/sms-plan", s.requireRole(auth.RoleOperator, s.smsPlan))
+			mux.Handle("POST "+pre+"/dispatch/sms-plans/{id}/confirm", s.requireRole(auth.RoleOperator, s.confirmSMSPlan))
+		}
+		if cfg.DevMode {
+			for _, pre := range []string{"", "/api/v1"} {
+				mux.Handle("POST "+pre+"/dev/incidents", s.requireRole(auth.RoleAdmin, s.devIncident))
+				mux.Handle("POST "+pre+"/dev/seed", s.requireRole(auth.RoleAdmin, s.devSeed))
+			}
+		}
+	}
 
 	return s.wrap(mux)
 }
@@ -512,6 +536,78 @@ func (s *Server) patchBrigade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"brigade": b})
+}
+
+// --- SMS evacuation module ---
+
+func (s *Server) activeZones(w http.ResponseWriter, r *http.Request) {
+	list, err := s.dispatch.ActiveZones(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"zones": list})
+}
+
+func (s *Server) smsPlan(w http.ResponseWriter, r *http.Request) {
+	disaster, _ := strconv.ParseBool(r.URL.Query().Get("disaster"))
+	p, err := s.dispatch.Preview(r.Context(), r.PathValue("zoneId"), disaster)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid_zone")
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) confirmSMSPlan(w http.ResponseWriter, r *http.Request) {
+	res, err := s.dispatch.Confirm(r.Context(), r.PathValue("id"))
+	if err != nil {
+		switch err {
+		case dispatch.ErrNotFound:
+			s.writeError(w, r, http.StatusNotFound, "not_found")
+		case dispatch.ErrAlready:
+			s.writeError(w, r, http.StatusConflict, "already_confirmed")
+		case dispatch.ErrQuota:
+			s.writeError(w, r, http.StatusConflict, "quota_changed")
+		default:
+			s.fail(w, r, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) devIncident(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		District string `json:"district"`
+		Count    int    `json:"count"`
+	}
+	if err := decode(r, &in); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	list, err := s.dispatch.InjectIncident(r.Context(), in.District, in.Count)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid_zone")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"zones": list})
+}
+
+func (s *Server) devSeed(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		District string `json:"district"`
+		Citizens int    `json:"citizens"`
+	}
+	if err := decode(r, &in); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err := s.dispatch.Seed(r.Context(), in.District, in.Citizens); err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid_zone")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) executeAlert(w http.ResponseWriter, r *http.Request) {

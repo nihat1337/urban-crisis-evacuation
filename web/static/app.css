@@ -363,3 +363,32 @@ body.light .leaflet-bottom.leaflet-left { bottom: 0; }
 
 /* RBAC: controls above the signed-in role are visibly locked (server enforces it too) */
 .rbac-locked { opacity: .4; pointer-events: none; filter: grayscale(.6); }
+
+/* ---------- SMS evacuation card + success pop-up ---------- */
+.sms-card select { width: 100%; height: 42px; font-weight: 600; }
+.sms-opts { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.check input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.sms-send { min-height: 46px; width: 100%; font-weight: 800; }
+
+dialog.modal { width: min(440px, calc(100% - 32px)); border: 1px solid var(--border); border-radius: 20px; padding: 28px 24px 22px;
+  background: var(--card); color: var(--text); box-shadow: 0 30px 80px rgba(0,0,0,.45); text-align: center; }
+dialog.modal::backdrop { background: rgba(11,15,23,.6); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+dialog.modal[open] { animation: pop .18s ease-out; }
+@keyframes pop { from { transform: scale(.94); opacity: 0; } to { transform: none; opacity: 1; } }
+.modal-icon { width: 64px; height: 64px; margin: 0 auto 12px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--green); color: #fff; box-shadow: 0 0 0 8px color-mix(in srgb, var(--green) 18%, transparent); }
+dialog.modal.partial .modal-icon { background: var(--prio); box-shadow: 0 0 0 8px color-mix(in srgb, var(--prio) 18%, transparent); }
+dialog.modal h2 { margin: 0 0 6px; font-size: 21px; font-weight: 800; letter-spacing: -.3px; }
+.modal-sub { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+.modal-sub b { color: var(--text); }
+.modal-list { list-style: none; margin: 0 0 12px; padding: 0; text-align: left; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.modal-list:empty { display: none; }
+.modal-list li { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; font-size: 13px; }
+.modal-list li + li { border-top: 1px solid var(--border); }
+.modal-list li span:first-child { font-weight: 600; }
+.modal-list li .mono { color: var(--muted); white-space: nowrap; }
+.modal-extra { margin: 0 0 16px; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.modal-extra:empty { display: none; }
+dialog.modal .bad { color: var(--red-text); font-weight: 700; }
+dialog.modal .btn { width: 100%; min-height: 44px; }

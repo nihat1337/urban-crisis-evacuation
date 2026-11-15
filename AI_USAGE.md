@@ -6,7 +6,12 @@
 
 ## 1. İstifadə olunan alət
 
-Layihənin hazırlanmasında **Claude Code** (Anthropic, Claude modeli) adlı AI köməkçi proqramlaşdırma aləti istifadə olunmuşdur. Alət komanda üzvünün kompüterində terminal vasitəsilə, interaktiv rejimdə (“pair programming”) işlədilmişdir.
+Layihənin hazırlanmasında Anthropic şirkətinin **Claude** modelləri əsasında iki AI aləti istifadə olunmuşdur:
+
+- **Claude Code** — AI köməkçi proqramlaşdırma aləti; komanda üzvünün kompüterində terminal vasitəsilə, interaktiv rejimdə (“pair programming”) işlədilmişdir (backend, testlər, sənədlər).
+- **Claude tətbiqi** (claude.ai / Claude desktop) — istifadəçi interfeysinin dizaynı: dizayn maketlərinin hazırlanması, komandanın təsdiqindən sonra yalnız `web/` qovluğundakı dizayn fayllarına (HTML/CSS/JS) tətbiq edilməsi, brauzerdə yoxlanılması və sənədlərin yenilənməsi; həmçinin **SMS təxliyə modulunun** əvvəlki iş nüsxəsindən cari versiyaya köçürülməsi (endpointlərə giriş/rol tələbinin əlavə edilməsi, AZ/EN tərcümələri, bir kliklə göndərmə və «Uğurla göndərildi» pəncərəsi, avtomatik test).
+
+Commit-lərdə AI iştirakı `Co-Authored-By: Claude …` sətri ilə qeyd olunub.
 
 ## 2. AI-nin rolu
 
@@ -16,8 +21,9 @@ AI aşağıdakı sahələrdə köməkçi vasitə kimi istifadə olunmuşdur:
 |---|---|---|
 | Arxitektura | Qatlı (layered) struktur, interfeyslər (Store, Router) və fallback mexanizmlərinin təklifi | Tələblərin təhlili, arxitektur qərarların (PostgreSQL + in-memory fallback, OSRM + simulyasiya) **seçimi və təsdiqi** |
 | Kod | Go kodunun, HTML/JS interfeysinin, Dockerfile və compose faylının ilkin variantının yazılması | Hər modulun yoxlanılması, test edilməsi, lazım gəldikdə dəyişdirilməsi |
-| Testlər | Unit və inteqrasiya testlərinin yazılması | Test ssenarilərinin (4 SOS / 5 dəq / 500 m, 95 % doluluq) **problem şərtindən** müəyyən edilməsi |
-| Sənədləşmə | README, texniki izah sənədi və bu bəyannamənin tərtibi | Məzmunun doğruluğunun yoxlanılması |
+| Testlər | Unit və inteqrasiya testlərinin yazılması (o cümlədən SMS təxliyə modulu üçün) | Test ssenarilərinin (4 SOS / 5 dəq / 500 m, 95 % doluluq) **problem şərtindən** müəyyən edilməsi |
+| UI dizayn | Dizayn maketləri (vətəndaş — açıq tema, dispeçer — qaranlıq tema), funksionallığı dəyişmədən HTML/CSS/JS-ə tətbiqi, açıq/qaranlıq tema dəstəyi, SVG ikonlar | Dizayn istiqamətinin seçimi, maketlərə rəy və **təsdiq**, “funksionallıq dəyişməməlidir” şərti, nəticənin yoxlanılması |
+| Sənədləşmə | README, texniki izah sənədi və bu bəyannamənin tərtibi və yenilənməsi | Məzmunun doğruluğunun yoxlanılması |
 
 ## 3. AI-nin iştirak etmədiyi sahələr
 
@@ -30,16 +36,19 @@ AI aşağıdakı sahələrdə köməkçi vasitə kimi istifadə olunmuşdur:
 
 AI tərəfindən yaradılan hər bir kod parçası:
 1. `go vet` və `go test ./... -race` ilə avtomatik yoxlanılmışdır;
-2. Docker image-də qurularaq (`docker compose up --build`) real mühitdə işlədilmişdir;
-3. Komanda üzvü tərəfindən oxunmuş və məntiqi başa düşülmüşdür — komanda kodun istənilən hissəsini izah etməyə hazırdır.
+2. Yeni modullar mövcud funksionallığı pozmamaq şərti ilə əlavə edilmiş, bütün köhnə testlər yenidən işlədilmişdir;
+3. Docker image-də qurularaq (`docker compose up --build`) real mühitdə işlədilmişdir;
+4. İnterfeys dəyişiklikləri brauzerdə (vətəndaş və dispeçer, açıq və qaranlıq tema, desktop və mobil ölçü) əsas ssenarilər üzrə sınanmışdır (SOS, status, prioritet rejim, profil, giriş, simulyasiya, briqada statusu, SMS, SMS təxliyə modulu — admin / operator / viewer rolları);
+5. Komanda üzvü tərəfindən oxunmuş və məntiqi başa düşülmüşdür — komanda kodun istənilən hissəsini izah etməyə hazırdır.
 
 ## 5. Məlumat və məxfilik
 
-- Heç bir şəxsi məlumat, real vətəndaş məlumatı və ya məxfi açar AI alətinə ötürülməmişdir.
-- Layihədəki bütün məlumatlar (rayonlar, sığınacaqlar, briqadalar) **simulyasiya məqsədli nümunə məlumatlardır**.
-- Xarici xidmətlərdən yalnız açıq OSRM demo serveri (marşrutlaşdırma) və açıq xəritə laylarından (OpenStreetMap) istifadə olunur.
+- Heç bir şəxsi məlumat və ya real vətəndaş məlumatı AI alətinə ötürülməmişdir.
+- **İstisna:** Google Maps Platform API açarı konfiqurasiya zamanı AI köməkçisi ilə yazışmada paylaşılmışdır. Açar repozitoriyaya yazılmır (`.env` faylı `.gitignore`-dadır); müsabiqədən sonra açarın məhdudlaşdırılması və ya yenilənməsi nəzərdə tutulur.
+- Layihədəki bütün məlumatlar (rayonlar, sığınacaqlar, briqadalar, SMS modulunun demo vətəndaşları və `+99450…` nömrələri) **simulyasiya məqsədli nümunə məlumatlardır**; SMS şlüzü simulyasiya rejimindədir — real mesaj göndərilmir.
+- Xarici xidmətlər: **Google Maps JavaScript API** (xəritə) və **Google Routes API** (piyada marşrut) — yalnız açar verildikdə; açıq **OSRM** demo serveri (marşrutlaşdırma) və **OpenStreetMap** xəritə layları. Xarici xidmətlər əlçatan olmadıqda sistem keşlənmiş marşrutlar və daxili yol qrafı ilə işləməyə davam edir.
 
-## 6. Açıq mənbə komponentlər
+## 6. İstifadə olunan komponentlər və xidmətlər
 
 | Komponent | Lisenziya | Təyinat |
 |---|---|---|
@@ -48,6 +57,9 @@ AI tərəfindən yaradılan hər bir kod parçası:
 | Leaflet 1.9.4 | BSD-2 | Xəritə |
 | OpenStreetMap tiles | ODbL | Xəritə layları |
 | OSRM demo server | BSD-2 | Küçə üzrə marşrut |
+| Google Maps Platform (Maps JavaScript API, Routes API) | Google Maps Platform şərtləri (kommersiya xidməti) | Xəritə və piyada marşrut (açar varsa) |
+| Leaflet.GridLayer.GoogleMutant 0.14.1 | Beerware | Google xəritəsinin Leaflet-də göstərilməsi |
+| Inter, JetBrains Mono (Google Fonts) | SIL OFL 1.1 | İnterfeys şriftləri |
 
 ---
 

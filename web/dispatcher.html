@@ -59,6 +59,18 @@
 
   <!-- Right: resources -->
   <section class="col resources">
+    <section class="card sms-card" id="sms-module">
+      <h3><span data-i18n="sms_title">SMS təxliyə modulu</span><span id="sms-badge" class="badge red"></span></h3>
+      <p class="hint" data-i18n="sms_helper">Seçilmiş rayondakı telefon nömrəsi olan vətəndaşlar qruplara bölünür.</p>
+      <select id="sms-zone" aria-label="SMS"></select>
+      <div class="sms-opts">
+        <label class="check"><input type="checkbox" id="sms-all"> <span data-i18n="all_districts">Bütün rayonlar</span></label>
+        <label class="check"><input type="checkbox" id="sms-disaster"> <span data-i18n="sms_disaster">Fəlakət rejimi (3 km)</span></label>
+        <span id="sms-recommend" class="badge orange" hidden data-i18n="recommended">Tövsiyə olunur</span>
+      </div>
+      <button id="sms-send" class="btn danger sms-send" type="button"><svg class="ico" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg><span data-i18n="sms_send">Göndər</span></button>
+    </section>
+
     <section class="card">
       <h3 data-i18n="zones">Zonalar</h3>
       <table id="zones"><thead><tr>
@@ -107,6 +119,15 @@
     </section>
   </section>
 </main>
+
+<dialog id="sms-dialog" class="modal" aria-labelledby="sms-dlg-title">
+  <div class="modal-icon" id="sms-dlg-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+  <h2 id="sms-dlg-title">Uğurla göndərildi</h2>
+  <p id="sms-dlg-text" class="modal-sub"></p>
+  <ul id="sms-dlg-points" class="modal-list"></ul>
+  <p id="sms-dlg-extra" class="modal-extra"></p>
+  <button type="button" class="btn primary" id="sms-dlg-close" data-i18n="close">Bağla</button>
+</dialog>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="/static/common.js"></script>
@@ -178,7 +199,7 @@
   // server enforces it anyway — the UI only mirrors the policy).
   function applyRBAC() {
     $$('[data-exec],[data-brigade],[data-chaos]').forEach(el => el.classList.toggle('rbac-locked', !can('admin')));
-    $$('[data-shelter],[data-resolve],[data-notify],#sim,#sim-prio').forEach(el => el.classList.toggle('rbac-locked', !can('operator')));
+    $$('[data-shelter],[data-resolve],[data-notify],#sim,#sim-prio,#sms-send').forEach(el => el.classList.toggle('rbac-locked', !can('operator')));
     if (!can('admin')) $$('[data-exec],[data-brigade],[data-chaos]').forEach(el => el.title = t('rbac_admin_only'));
   }
 
@@ -193,11 +214,106 @@
       [ov, metrics] = await Promise.all([api('/dispatch/overview'), api('/metrics').catch(() => null)]);
       render();
       applyRBAC();
+      refreshActiveZones();
     } catch (e) {
       if (e.status === 401) showLogin(t('unauthorized')); else toast(e.message, 'error');
     }
   }
   const reload = debounce(load, 250);
+
+  // --- SMS evacuation module: active districts → one-click send → success pop-up ---
+  const smsSel = $('#sms-zone'), smsAll = $('#sms-all'), smsDisaster = $('#sms-disaster');
+  let smsZones = [], smsOpen = false;
+  smsSel.addEventListener('pointerdown', () => { smsOpen = true; });
+  smsSel.addEventListener('focus', () => { smsOpen = true; });
+  smsSel.addEventListener('blur', () => { smsOpen = false; refreshActiveZones(); });
+  const smsKm = (v) => Number(v || 0).toFixed(1).replace('.', ',');
+  const smsDist = (m) => m >= 1000 ? `${(m / 1000).toFixed(1).replace('.', ',')} km` : `${Math.round(m / 10) * 10} m`;
+  function smsOption(text, value, disabled = false) {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = text; o.disabled = disabled; return o;
+  }
+  function renderSmsZones() {
+    if (smsOpen || !smsSel) return;
+    const current = smsSel.value;
+    const affected = smsZones.filter(z => z.status === 'affected');
+    const nearby = smsZones.filter(z => z.status === 'nearby');
+    const listed = new Set([...affected, ...nearby].map(z => z.district_id));
+    const frag = document.createDocumentFragment();
+    if (!affected.length && !nearby.length && !smsAll.checked) {
+      frag.appendChild(smsOption(t('sms_no_active'), '', true));
+    }
+    if (affected.length) {
+      const g = document.createElement('optgroup'); g.label = t('sms_group_affected');
+      // the server's reason text is Azerbaijani; in other languages show the count instead
+      affected.forEach(z => g.appendChild(smsOption(`${z.name} · ${LANG === 'az' ? z.reason : z.incident_count + ' ' + t('sms_incidents')}`, z.district_id)));
+      frag.appendChild(g);
+    }
+    if (nearby.length) {
+      const g = document.createElement('optgroup'); g.label = t('sms_group_nearby');
+      nearby.forEach(z => g.appendChild(smsOption(`${z.name} · ${smsKm(z.distance_km)} km`, z.district_id)));
+      frag.appendChild(g);
+    }
+    if (smsAll.checked && ov?.zones) {
+      const other = ov.zones.filter(z => !listed.has(z.id));
+      if (other.length) {
+        const g = document.createElement('optgroup'); g.label = t('sms_group_other');
+        other.forEach(z => g.appendChild(smsOption(z.name, z.id)));
+        frag.appendChild(g);
+      }
+    }
+    smsSel.innerHTML = ''; smsSel.appendChild(frag);
+    if (current && [...smsSel.options].some(o => o.value === current && !o.disabled)) smsSel.value = current;
+    else if (affected.length) smsSel.value = affected[0].district_id;
+    else { const first = [...smsSel.options].find(o => !o.disabled); if (first) smsSel.value = first.value; }
+    $('#sms-recommend').hidden = !(affected.length >= 2 || (ov?.alerts || []).some(a => !a.executed));
+    $('#sms-badge').textContent = affected.length ? `${affected.length} ${t('sms_districts')}` : '';
+  }
+  async function refreshActiveZones() {
+    if (!authed) return;
+    try { const r = await api('/dispatch/active-zones'); smsZones = r.zones || []; renderSmsZones(); }
+    catch (e) { if (e.status !== 401) console.warn('active zones', e.message); }
+  }
+  smsAll.onchange = renderSmsZones;
+
+  // Pop-up shown after "Göndər": success (or partial) with the per-point breakdown.
+  const smsDlg = $('#sms-dialog');
+  $('#sms-dlg-close').onclick = () => smsDlg.close();
+  smsDlg.addEventListener('click', (e) => { if (e.target === smsDlg) smsDlg.close(); }); // click outside closes
+  function showSmsResult(plan, r) {
+    const ok = r.failed === 0;
+    smsDlg.classList.toggle('partial', !ok);
+    $('#sms-dlg-title').textContent = t(ok ? 'sms_success_title' : 'sms_partial_title');
+    $('#sms-dlg-text').innerHTML = `<b>${esc(plan.zone_name)}</b> · ${r.sent} ${esc(t('sms_sent_line'))}` +
+      (r.failed ? ` · <span class="bad">${esc(t('sms_failed'))}: ${r.failed}</span>` : '');
+    $('#sms-dlg-points').innerHTML = (plan.points || []).map(p =>
+      `<li><span>${esc(p.name)}</span><span class="mono">${p.assigned} ${esc(t('sms_people'))} · ${esc(t('sms_avg'))} ${smsDist(p.avg_distance_m)}</span></li>`).join('');
+    const general = (plan.unassigned || 0) + (plan.no_location || 0);
+    $('#sms-dlg-extra').innerHTML = [
+      general ? `${esc(t('sms_general'))}: <b>${general}</b>` : '',
+      plan.needs_new_point ? `<span class="bad">${esc(t('sms_needs_point'))}</span>` : '',
+    ].filter(Boolean).join('<br>');
+    smsDlg.showModal();
+    $('#sms-dlg-close').focus();
+  }
+
+  // One click: build the plan for the chosen district and send it right away.
+  $('#sms-send').onclick = async () => {
+    const zone = smsSel.value;
+    if (!zone) { toast(t('sms_select_zone'), 'warn'); return; }
+    const btn = $('#sms-send'), label = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = `${icon('chat', 17)}<span>${esc(t('sms_sending'))}</span>`;
+    try {
+      const plan = await api(`/dispatch/zones/${encodeURIComponent(zone)}/sms-plan?disaster=${smsDisaster.checked}`, { method: 'POST' });
+      if (!(plan.total_recipients + plan.unassigned + plan.no_location)) { toast(t('sms_no_recipients'), 'warn'); return; }
+      const r = await api(`/dispatch/sms-plans/${encodeURIComponent(plan.id)}/confirm`, { method: 'POST' });
+      showSmsResult(plan, r);
+      load();
+    } catch (e) { toast(e.message, 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = label; }
+  };
+  document.addEventListener('langchange', renderSmsZones);
+  setInterval(refreshActiveZones, 10000);
 
   function zoneName(id) { return ov?.zones.find(z => z.id === id)?.name || id; }
 

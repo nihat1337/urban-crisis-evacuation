@@ -159,9 +159,10 @@ type Citizen struct {
 	// Optional profile: lets dispatchers call back and lets the system push
 	// SMS guidance that works even when mobile data is down. No password —
 	// an emergency app must never put a login between a person and SOS.
-	Name  string `json:"name,omitempty"`
-	Phone string `json:"phone,omitempty"`
-	Email string `json:"email,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Phone  string `json:"phone,omitempty"`
+	Email  string `json:"email,omitempty"`
+	ZoneID string `json:"zone_id,omitempty"` // district membership for SMS evacuation
 }
 
 // Notification is an outbound message (SMS) sent to a citizen.

@@ -15,6 +15,7 @@ import (
 	"github.com/nihat1337/urban-crisis-evacuation/internal/auth"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/config"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/crisis"
+	"github.com/nihat1337/urban-crisis-evacuation/internal/dispatch"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/events"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/notify"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/routing"
@@ -71,7 +72,15 @@ func main() {
 	log.Info("notifications", "provider", cfg.NotifyProvider, "public_url", cfg.PublicURL)
 	svc.StartMonitors(ctx) // pushes routing.status events when the external API goes down / comes back
 
+	dispatchSvc := dispatch.New(dispatch.Config{
+		PublicURL: cfg.PublicURL,
+		DemoMode:  os.Getenv("DEMO_MODE") == "1",
+		Workers:   20,
+	}, st, dispatch.SMSSenderFunc(svc.SendSMS), hub, log)
+
 	handler := api.New(api.Config{
+		Dispatch:      dispatchSvc,
+		DevMode:       cfg.Env != "production",
 		DispatcherKey: cfg.DispatcherKey, RateLimitRPS: cfg.RateLimitRPS, RateLimitBurst: cfg.RateLimitBurst,
 		DefaultLang: cfg.DefaultLang, Version: version, GoogleMapsKey: cfg.GoogleMapsKey,
 		JWTSecret: []byte(cfg.JWTSecret), Users: auth.ParseUsers(cfg.DispatchUsers), TokenTTL: cfg.TokenTTL,

@@ -50,6 +50,10 @@ services:
       DEFAULT_LANG: ${DEFAULT_LANG:-az}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:${PORT:-8080}}
       NOTIFY_PROVIDER: ${NOTIFY_PROVIDER:-simulated}
+      # SMS evacuation module: DEMO_MODE=1 prefixes every SMS with [DEMO/TEST];
+      # APP_ENV=production turns off the admin-only /dev/seed and /dev/incidents helpers.
+      DEMO_MODE: ${DEMO_MODE:-0}
+      APP_ENV: ${APP_ENV:-development}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     restart: unless-stopped
 

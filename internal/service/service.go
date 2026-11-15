@@ -199,6 +199,14 @@ func (s *Service) WithNotifier(n notify.Sender, publicURL string) *Service {
 	return s
 }
 
+// SendSMS is a thin adapter over the existing sender. The dispatcher SMS
+// module calls this method; the provider, retries and configuration are exactly
+// the ones already used by the rest of the system.
+func (s *Service) SendSMS(ctx context.Context, to, text string) error {
+	_, err := s.notifier.Send(ctx, to, text)
+	return err
+}
+
 func (s *Service) NotifyStatus() map[string]any {
 	return map[string]any{"provider": s.notifier.Name(), "simulated": s.notifier.Simulated()}
 }
