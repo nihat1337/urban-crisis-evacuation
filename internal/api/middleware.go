@@ -52,7 +52,9 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Referrer-Policy", "no-referrer")
+		// Origin only (not "no-referrer"): OSM tile servers block requests without
+		// a Referer, and referrer-restricted Google Maps keys need it too.
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
 		isAPI := strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/v1/events"
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
