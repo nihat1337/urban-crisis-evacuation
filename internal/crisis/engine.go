@@ -42,6 +42,9 @@ func (e *Engine) Config() Config { return e.cfg }
 // OnSOS evaluates the cluster rule after a new signal has been stored.
 // It returns the created alert, or nil when no new alert is warranted.
 func (e *Engine) OnSOS(ctx context.Context, s domain.SOS) (*domain.Alert, error) {
+	if s.Suspect {
+		return nil, nil // flood/bot traffic must never trigger a red alert
+	}
 	now := e.Now()
 	recent, err := e.store.ListSOS(ctx, now.Add(-e.cfg.Window))
 	if err != nil {
@@ -50,7 +53,7 @@ func (e *Engine) OnSOS(ctx context.Context, s domain.SOS) (*domain.Alert, error)
 	// Count distinct citizens (fərqli SOS) that are either in the same zone or within the radius.
 	citizens := map[string]bool{}
 	for _, r := range recent {
-		if r.Status == domain.SOSResolved {
+		if r.Status == domain.SOSResolved || r.Suspect {
 			continue
 		}
 		if r.ZoneID == s.ZoneID || domain.DistanceM(r.Location, s.Location) <= e.cfg.RadiusM {

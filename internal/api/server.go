@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/nihat1337/urban-crisis-evacuation/internal/auth"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/domain"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/events"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/i18n"
@@ -26,19 +28,40 @@ type Config struct {
 	DefaultLang    string
 	Version        string
 	GoogleMapsKey  string // browser (referrer-restricted) key; empty → OSM tiles
+
+	// Security
+	JWTSecret     []byte
+	Users         map[string]auth.User
+	TokenTTL      time.Duration
+	TrustProxy    bool
+	SOSRatePerMin float64 // POST /api/v1/sos per client IP
+	SOSBurst      int
 }
 
 type Server struct {
-	cfg     Config
-	svc     *service.Service
-	hub     *events.Hub
-	log     *slog.Logger
-	limiter *limiter
-	started time.Time
+	cfg        Config
+	svc        *service.Service
+	hub        *events.Hub
+	log        *slog.Logger
+	limiter    *limiter // all API traffic, per IP
+	sosLimiter *limiter // stricter, SOS only
+	metrics    *metrics
+	started    time.Time
 }
 
 func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) http.Handler {
-	s := &Server{cfg: cfg, svc: svc, hub: hub, log: log, limiter: newLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst), started: time.Now()}
+	if cfg.TokenTTL <= 0 {
+		cfg.TokenTTL = 8 * time.Hour
+	}
+	if cfg.SOSRatePerMin <= 0 {
+		cfg.SOSRatePerMin = 10
+	}
+	if cfg.SOSBurst <= 0 {
+		cfg.SOSBurst = 5
+	}
+	s := &Server{cfg: cfg, svc: svc, hub: hub, log: log, started: time.Now(),
+		limiter: newLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst), sosLimiter: newLimiter(cfg.SOSRatePerMin/60, cfg.SOSBurst),
+		metrics: newMetrics(20000)}
 	mux := http.NewServeMux()
 
 	// Web apps
@@ -49,7 +72,9 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 
 	// Module 1 — citizen (public)
 	mux.HandleFunc("GET /api/v1/health", s.health)
+	mux.HandleFunc("GET /api/v1/metrics", s.metricsHandler)
 	mux.HandleFunc("GET /api/v1/config", s.clientConfig)
+	mux.HandleFunc("POST /api/v1/auth/login", s.login)
 	mux.HandleFunc("GET /api/v1/i18n", s.languages)
 	mux.HandleFunc("GET /api/v1/i18n/{lang}", s.bundle)
 	mux.HandleFunc("GET /api/v1/zones", s.zones)
@@ -63,17 +88,19 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 	mux.Handle("GET /api/v1/events", hub)
 
 	// Module 2 — dispatcher (protected)
-	mux.Handle("GET /api/v1/dispatch/session", s.requireKey(s.session))
-	mux.Handle("GET /api/v1/dispatch/overview", s.requireKey(s.overview))
-	mux.Handle("GET /api/v1/dispatch/sos", s.requireKey(s.listSOS))
-	mux.Handle("POST /api/v1/dispatch/sos/{id}/resolve", s.requireKey(s.resolveSOS))
-	mux.Handle("POST /api/v1/dispatch/sos/{id}/notify", s.requireKey(s.notifySOS))
-	mux.Handle("GET /api/v1/dispatch/notifications", s.requireKey(s.listNotifications))
-	mux.Handle("POST /api/v1/dispatch/chaos", s.requireKey(s.chaos))
-	mux.Handle("PATCH /api/v1/dispatch/shelters/{id}", s.requireKey(s.patchShelter))
-	mux.Handle("PATCH /api/v1/dispatch/roads/{id}", s.requireKey(s.patchRoad))
-	mux.Handle("PATCH /api/v1/dispatch/brigades/{id}", s.requireKey(s.patchBrigade))
-	mux.Handle("POST /api/v1/dispatch/alerts/{id}/execute", s.requireKey(s.executeAlert))
+	// RBAC: viewer → read, operator → field updates, admin → critical operations
+	// (brigade dispatch / alert execution, brigade status, resilience drills).
+	mux.Handle("GET /api/v1/dispatch/session", s.requireRole(auth.RoleViewer, s.session))
+	mux.Handle("GET /api/v1/dispatch/overview", s.requireRole(auth.RoleViewer, s.overview))
+	mux.Handle("GET /api/v1/dispatch/sos", s.requireRole(auth.RoleViewer, s.listSOS))
+	mux.Handle("GET /api/v1/dispatch/notifications", s.requireRole(auth.RoleViewer, s.listNotifications))
+	mux.Handle("POST /api/v1/dispatch/sos/{id}/resolve", s.requireRole(auth.RoleOperator, s.resolveSOS))
+	mux.Handle("POST /api/v1/dispatch/sos/{id}/notify", s.requireRole(auth.RoleOperator, s.notifySOS))
+	mux.Handle("PATCH /api/v1/dispatch/shelters/{id}", s.requireRole(auth.RoleOperator, s.patchShelter))
+	mux.Handle("PATCH /api/v1/dispatch/roads/{id}", s.requireRole(auth.RoleOperator, s.patchRoad))
+	mux.Handle("PATCH /api/v1/dispatch/brigades/{id}", s.requireRole(auth.RoleAdmin, s.patchBrigade))
+	mux.Handle("POST /api/v1/dispatch/alerts/{id}/execute", s.requireRole(auth.RoleAdmin, s.executeAlert))
+	mux.Handle("POST /api/v1/dispatch/chaos", s.requireRole(auth.RoleAdmin, s.chaos))
 
 	return s.wrap(mux)
 }
@@ -178,9 +205,13 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if rt.Degraded {
 		mode = "offline" // backup routing (cache / local graph) in use — service continues
 	}
+	lat := s.metrics.snapshot(60 * time.Second)
 	writeJSON(w, code, map[string]any{
 		"status":    status,
 		"routing_mode": mode,
+		"avg_latency_ms": lat.AvgMs,
+		"p95_latency_ms": lat.P95Ms,
+		"rps": lat.RPS,
 		"version":   s.cfg.Version,
 		"uptime_s":  int(time.Since(s.started).Seconds()),
 		"store":     s.svc.StoreName(),
@@ -260,6 +291,11 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createSOS(w http.ResponseWriter, r *http.Request) {
+	if !s.sosLimiter.allow(s.clientIP(r)) {
+		w.Header().Set("Retry-After", "6")
+		s.writeError(w, r, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
 	var in service.SOSInput
 	if err := decode(r, &in); err != nil {
 		s.fail(w, r, err)
@@ -268,6 +304,10 @@ func (s *Server) createSOS(w http.ResponseWriter, r *http.Request) {
 	res, err := s.svc.SubmitSOS(r.Context(), in)
 	if err != nil {
 		s.fail(w, r, err)
+		return
+	}
+	if res.Duplicate {
+		writeJSON(w, http.StatusOK, res) // idempotent: identical recent signal, nothing new created
 		return
 	}
 	writeJSON(w, http.StatusCreated, res)
@@ -360,8 +400,35 @@ func (s *Server) citizenStatus(w http.ResponseWriter, r *http.Request) {
 
 // session lets the dispatcher UI validate a key at login without pulling the
 // whole overview. requireKey already rejected bad keys with 401.
-func (s *Server) session(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"role": "dispatcher", "authenticated": true, "time": time.Now().UTC()})
+func (s *Server) session(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r)
+	writeJSON(w, http.StatusOK, map[string]any{"user": c.Sub, "role": c.Role, "authenticated": true, "expires_at": c.Exp, "time": time.Now().UTC()})
+}
+
+// login issues a JWT for a dispatcher account: {"username","password"}.
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := decode(r, &in); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	u, ok := s.cfg.Users[strings.TrimSpace(in.Username)]
+	if !ok || !u.CheckPassword(in.Password) || len(s.cfg.JWTSecret) == 0 {
+		s.log.Warn("login failed", "user", in.Username, "ip", s.clientIP(r))
+		s.writeError(w, r, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	now := time.Now()
+	c := auth.Claims{Sub: u.Name, Role: u.Role, Iat: now.Unix(), Exp: now.Add(s.cfg.TokenTTL).Unix()}
+	s.log.Info("login ok", "user", u.Name, "role", u.Role, "ip", s.clientIP(r))
+	writeJSON(w, http.StatusOK, map[string]any{"token": auth.Sign(s.cfg.JWTSecret, c), "user": u.Name, "role": u.Role, "expires_at": c.Exp})
+}
+
+func (s *Server) metricsHandler(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"latency": s.metrics.snapshot(60 * time.Second), "security": s.svc.SecurityStatus(), "time": time.Now().UTC()})
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {

@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS notifications (
 	error text NOT NULL DEFAULT '', created_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS notifications_created_idx ON notifications (created_at DESC);
+-- SOS flood protection module.
+ALTER TABLE sos ADD COLUMN IF NOT EXISTS suspect boolean NOT NULL DEFAULT false;
+ALTER TABLE sos ADD COLUMN IF NOT EXISTS suspect_reason text NOT NULL DEFAULT '';
 `
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -200,12 +203,12 @@ func (s *Store) UpsertShelter(ctx context.Context, sh domain.Shelter) error {
 
 // --- sos ---
 
-const sosCols = `id, citizen_id, type, zone_id, lat, lng, message, status, brigade_id, created_at, role, priority, citizen_name, citizen_phone, citizen_email`
+const sosCols = `id, citizen_id, type, zone_id, lat, lng, message, status, brigade_id, created_at, role, priority, citizen_name, citizen_phone, citizen_email, suspect, suspect_reason`
 
 func scanSOS(row pgx.Row) (domain.SOS, error) {
 	var v domain.SOS
 	err := row.Scan(&v.ID, &v.CitizenID, &v.Type, &v.ZoneID, &v.Location.Lat, &v.Location.Lng, &v.Message, &v.Status, &v.BrigadeID, &v.CreatedAt, &v.Role, &v.Priority,
-		&v.CitizenName, &v.CitizenPhone, &v.CitizenEmail)
+		&v.CitizenName, &v.CitizenPhone, &v.CitizenEmail, &v.Suspect, &v.SuspectReason)
 	return v, err
 }
 
@@ -216,9 +219,9 @@ func (s *Store) CreateSOS(ctx context.Context, v domain.SOS) error {
 	if v.Priority == 0 {
 		v.Priority = domain.PriorityNormal
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO sos (`+sosCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+	_, err := s.pool.Exec(ctx, `INSERT INTO sos (`+sosCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		v.ID, v.CitizenID, v.Type, v.ZoneID, v.Location.Lat, v.Location.Lng, v.Message, v.Status, v.BrigadeID, v.CreatedAt, v.Role, v.Priority,
-		v.CitizenName, v.CitizenPhone, v.CitizenEmail)
+		v.CitizenName, v.CitizenPhone, v.CitizenEmail, v.Suspect, v.SuspectReason)
 	return err
 }
 

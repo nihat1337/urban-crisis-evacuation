@@ -43,6 +43,28 @@ func conflict(code string) *Error { return &Error{Status: 409, Code: code} }
 type Config struct {
 	ShelterWarnPct  float64
 	MaxAlternatives int
+	// Anti-flood: identical signals inside DedupeWindow are dropped; more than
+	// FloodThreshold signals per 10 s switches flood mode on, in which
+	// anonymous signals are stored as "suspect" and kept off the live queue.
+	DedupeWindow   time.Duration
+	FloodThreshold int
+}
+
+type dedupeEntry struct {
+	at    time.Time
+	sosID string
+}
+
+// floodGuard is the in-memory SOS flood detector (O(1) per request).
+type floodGuard struct {
+	mu         sync.Mutex
+	dedupe     map[string]dedupeEntry
+	recent     []time.Time // creation times within the last 10 s
+	active     bool
+	since      time.Time
+	duplicates int64
+	suspects   int64
+	ratePeak   int
 }
 
 type statusReporter interface{ Status() routing.Status }
@@ -59,6 +81,8 @@ type Service struct {
 	publicURL string
 	notifyMu  sync.Mutex
 	lastSMS   map[string]time.Time // citizen id → last reroute SMS (rate limit)
+
+	flood floodGuard
 }
 
 func New(cfg Config, st store.Store, rt routing.Router, eng *crisis.Engine, hub *events.Hub, log *slog.Logger) *Service {
@@ -68,8 +92,100 @@ func New(cfg Config, st store.Store, rt routing.Router, eng *crisis.Engine, hub 
 	if cfg.ShelterWarnPct <= 0 {
 		cfg.ShelterWarnPct = 90
 	}
+	if cfg.DedupeWindow <= 0 {
+		cfg.DedupeWindow = 30 * time.Second
+	}
+	if cfg.FloodThreshold <= 0 {
+		cfg.FloodThreshold = 60
+	}
 	return &Service{cfg: cfg, store: st, router: rt, engine: eng, hub: hub, log: log,
-		notifier: notify.NewLogSender(log), publicURL: "http://localhost:8080", lastSMS: map[string]time.Time{}}
+		notifier: notify.NewLogSender(log), publicURL: "http://localhost:8080", lastSMS: map[string]time.Time{},
+		flood: floodGuard{dedupe: map[string]dedupeEntry{}}}
+}
+
+// checkDuplicate returns the id of an identical recent signal, if any, and
+// otherwise registers this one. Keys: the citizen id, and type+location
+// rounded to ~11 m (catches bots that rotate ids but not coordinates).
+func (s *Service) checkDuplicate(citizenID string, typ domain.SOSType, p domain.Point, sosID string) (string, bool) {
+	now := time.Now()
+	s.flood.mu.Lock()
+	defer s.flood.mu.Unlock()
+	citizenKey := "c:" + citizenID
+	geoKey := fmt.Sprintf("g:%s|%.4f,%.4f", typ, p.Lat, p.Lng)
+	check := []string{citizenKey}
+	// Same type at the same spot from a "different" id is only treated as a
+	// duplicate while a flood is on: bots rotate ids but not coordinates,
+	// whereas in normal operation several people in one building legitimately
+	// report the same incident and must all count for the crisis rule.
+	if s.flood.active {
+		check = append(check, geoKey)
+	}
+	for _, k := range check {
+		if e, ok := s.flood.dedupe[k]; ok && now.Sub(e.at) < s.cfg.DedupeWindow {
+			s.flood.duplicates++
+			return e.sosID, true
+		}
+	}
+	s.flood.dedupe[citizenKey] = dedupeEntry{at: now, sosID: sosID}
+	s.flood.dedupe[geoKey] = dedupeEntry{at: now, sosID: sosID} // always remembered, only enforced during a flood
+	if len(s.flood.dedupe) > 20000 { // bounded memory even under attack
+		for k, e := range s.flood.dedupe {
+			if now.Sub(e.at) >= s.cfg.DedupeWindow {
+				delete(s.flood.dedupe, k)
+			}
+		}
+	}
+	return "", false
+}
+
+// noteSOS records a creation and returns whether flood mode is active.
+func (s *Service) noteSOS() bool {
+	now := time.Now()
+	s.flood.mu.Lock()
+	defer s.flood.mu.Unlock()
+	cut := now.Add(-10 * time.Second)
+	i := 0
+	for i < len(s.flood.recent) && s.flood.recent[i].Before(cut) {
+		i++
+	}
+	s.flood.recent = append(s.flood.recent[i:], now)
+	n := len(s.flood.recent)
+	if n > s.flood.ratePeak {
+		s.flood.ratePeak = n
+	}
+	switch {
+	case !s.flood.active && n > s.cfg.FloodThreshold:
+		s.flood.active, s.flood.since = true, now
+		s.log.Warn("SOS FLOOD detected — flood mode ON", "sos_10s", n, "threshold", s.cfg.FloodThreshold)
+		go s.hub.Publish("security.flood", s.securityLocked())
+	case s.flood.active && n < s.cfg.FloodThreshold/4 && now.Sub(s.flood.since) > 30*time.Second:
+		s.flood.active = false
+		s.log.Info("SOS flood over — flood mode OFF", "sos_10s", n)
+		go s.hub.Publish("security.flood", s.securityLocked())
+	}
+	return s.flood.active
+}
+
+func (s *Service) securityLocked() map[string]any {
+	n := 0
+	cut := time.Now().Add(-10 * time.Second)
+	for _, t := range s.flood.recent {
+		if !t.Before(cut) {
+			n++
+		}
+	}
+	return map[string]any{
+		"flood_mode": s.flood.active, "sos_10s": n, "threshold_10s": s.cfg.FloodThreshold,
+		"duplicates_dropped": s.flood.duplicates, "suspects": s.flood.suspects, "peak_10s": s.flood.ratePeak,
+		"dedupe_window_s": int(s.cfg.DedupeWindow.Seconds()),
+	}
+}
+
+// SecurityStatus is shown on the dispatcher panel.
+func (s *Service) SecurityStatus() map[string]any {
+	s.flood.mu.Lock()
+	defer s.flood.mu.Unlock()
+	return s.securityLocked()
 }
 
 // WithNotifier swaps the SMS gateway and the public URL used in message links.
@@ -118,6 +234,24 @@ func (s *Service) SetRoutingChaos(mode string) (routing.Status, error) {
 // SSE whenever it flips between online and offline/backup mode, so every
 // open citizen app shows (or hides) the offline banner within seconds.
 func (s *Service) StartMonitors(ctx context.Context) {
+	// Aggregated security stats while a flood is on (instead of one SSE event per bot request).
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		var lastSuspects int64 = -1
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				st := s.SecurityStatus()
+				if st["flood_mode"] == true || st["suspects"].(int64) != lastSuspects {
+					lastSuspects = st["suspects"].(int64)
+					s.hub.Publish("security.stats", st)
+				}
+			}
+		}
+	}()
 	go func() {
 		t := time.NewTicker(3 * time.Second)
 		defer t.Stop()
@@ -410,6 +544,7 @@ type SOSResult struct {
 	SOS          domain.SOS           `json:"sos"`
 	Alert        *domain.Alert        `json:"alert"`
 	Notification *domain.Notification `json:"notification"`
+	Duplicate    bool                 `json:"duplicate"` // identical recent signal — nothing new was created
 }
 
 // SubmitSOS stores the signal, marks the citizen as needing help, runs the
@@ -452,13 +587,34 @@ func (s *Service) SubmitSOS(ctx context.Context, in SOSInput) (SOSResult, error)
 		in.Message = in.Message[:500]
 	}
 	now := time.Now().UTC()
+	id := domain.NewID()
+	// Duplicate filter: same citizen, or same type at the same spot, inside the window.
+	if prevID, dup := s.checkDuplicate(in.CitizenID, in.Type, o, id); dup {
+		res := SOSResult{Duplicate: true}
+		if prev, err := s.store.GetSOS(ctx, prevID); err == nil {
+			res.SOS = prev
+		}
+		return res, nil
+	}
+	floodMode := s.noteSOS()
 	sos := domain.SOS{
-		ID: domain.NewID(), CitizenID: in.CitizenID, Role: in.Role, Priority: priority, Type: in.Type, ZoneID: zid,
+		ID: id, CitizenID: in.CitizenID, Role: in.Role, Priority: priority, Type: in.Type, ZoneID: zid,
 		Location: o, Message: in.Message, Status: domain.SOSOpen, CreatedAt: now,
 		CitizenName: profile.Name, CitizenPhone: profile.Phone, CitizenEmail: profile.Email,
 	}
+	if floodMode && profile.Phone == "" {
+		// Under a flood only verified (profiled) citizens reach the live queue;
+		// anonymous signals are kept for audit but never block the dispatcher.
+		sos.Suspect, sos.SuspectReason = true, "flood_anonymous"
+		s.flood.mu.Lock()
+		s.flood.suspects++
+		s.flood.mu.Unlock()
+	}
 	if err := s.store.CreateSOS(ctx, sos); err != nil {
 		return SOSResult{}, err
+	}
+	if sos.Suspect {
+		return SOSResult{SOS: sos}, nil // no SSE fan-out, no crisis engine, no SMS
 	}
 	profile.ID = in.CitizenID
 	profile.Role = in.Role
@@ -877,6 +1033,8 @@ type Overview struct {
 	Citizens      map[string]int        `json:"citizens"`
 	Notifications []domain.Notification `json:"notifications"`
 	Notify        map[string]any        `json:"notify"`
+	Security      map[string]any        `json:"security"`
+	SuspectSOS    int                   `json:"suspect_sos"` // hidden from the queue, counted here
 	Routing       routing.Status        `json:"routing"`
 	Store         string                `json:"store"`
 	Crisis        crisis.Config         `json:"crisis"`
@@ -895,12 +1053,22 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 	if ov.Shelters, err = s.store.ListShelters(ctx); err != nil {
 		return ov, err
 	}
-	if ov.SOS, err = s.store.ListSOS(ctx, now.Add(-24*time.Hour)); err != nil {
+	all, err := s.store.ListSOS(ctx, now.Add(-24*time.Hour))
+	if err != nil {
 		return ov, err
+	}
+	ov.SOS = make([]domain.SOS, 0, len(all))
+	for _, v := range all {
+		if v.Suspect {
+			ov.SuspectSOS++
+			continue // flood traffic never clutters the live queue
+		}
+		ov.SOS = append(ov.SOS, v)
 	}
 	if len(ov.SOS) > 300 {
 		ov.SOS = ov.SOS[:300]
 	}
+	ov.Security = s.SecurityStatus()
 	if ov.Brigades, err = s.store.ListBrigades(ctx); err != nil {
 		return ov, err
 	}

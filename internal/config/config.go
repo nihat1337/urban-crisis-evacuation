@@ -46,6 +46,16 @@ type Config struct {
 
 	DefaultLang string
 
+	// Security / anti-flood
+	JWTSecret        string
+	DispatchUsers    string        // "name:password:role,..."  roles: viewer | operator | admin
+	TokenTTL         time.Duration
+	TrustProxy       bool          // honour X-Forwarded-For for client IP (behind a reverse proxy)
+	SOSRatePerMin    float64       // per client IP, POST /api/v1/sos
+	SOSBurst         int
+	SOSDedupeWindow  time.Duration // same citizen / same spot+type within window → duplicate
+	FloodThreshold   int           // SOS per 10 s that switches flood mode on
+
 	// PublicURL is used in SMS texts for the route link the citizen can open.
 	PublicURL string
 	// NotifyProvider selects the SMS gateway: "simulated" (default) | future: "twilio".
@@ -85,6 +95,15 @@ func Load() Config {
 		RateLimitBurst: envInt("RATE_LIMIT_BURST", 40),
 
 		DefaultLang: env("DEFAULT_LANG", "az"),
+
+		JWTSecret:       env("JWT_SECRET", "change-me-in-production-9f1c"),
+		DispatchUsers:   env("DISPATCH_USERS", "admin:admin123:admin,operator:operator123:operator,viewer:viewer123:viewer"),
+		TokenTTL:        envDuration("TOKEN_TTL", 8*time.Hour),
+		TrustProxy:      envBool("TRUST_PROXY", false),
+		SOSRatePerMin:   envFloat("SOS_RATE_PER_MIN", 10),
+		SOSBurst:        envInt("SOS_BURST", 5),
+		SOSDedupeWindow: envDuration("SOS_DEDUPE_WINDOW", 30*time.Second),
+		FloodThreshold:  envInt("SOS_FLOOD_THRESHOLD", 60),
 
 		PublicURL:      strings.TrimRight(env("PUBLIC_URL", "http://localhost:"+env("PORT", "8080")), "/"),
 		NotifyProvider: env("NOTIFY_PROVIDER", "simulated"),

@@ -39,6 +39,14 @@ services:
       SHELTER_ALERT_PCT: ${SHELTER_ALERT_PCT:-95}
       SHELTER_WARN_PCT: ${SHELTER_WARN_PCT:-90}
       RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-20}
+      # Security / anti-flood (jury change #4)
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-9f1c}
+      DISPATCH_USERS: ${DISPATCH_USERS:-admin:admin123:admin,operator:operator123:operator,viewer:viewer123:viewer}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      SOS_RATE_PER_MIN: ${SOS_RATE_PER_MIN:-10}
+      SOS_BURST: ${SOS_BURST:-5}
+      SOS_DEDUPE_WINDOW: ${SOS_DEDUPE_WINDOW:-30s}
+      SOS_FLOOD_THRESHOLD: ${SOS_FLOOD_THRESHOLD:-60}
       DEFAULT_LANG: ${DEFAULT_LANG:-az}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:${PORT:-8080}}
       NOTIFY_PROVIDER: ${NOTIFY_PROVIDER:-simulated}

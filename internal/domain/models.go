@@ -126,6 +126,11 @@ type SOS struct {
 	CitizenName  string `json:"citizen_name,omitempty"`
 	CitizenPhone string `json:"citizen_phone,omitempty"`
 	CitizenEmail string `json:"citizen_email,omitempty"`
+	// Suspect marks signals received during an SOS flood from unverified
+	// (anonymous) sources: stored for audit, hidden from the live queue and
+	// ignored by the crisis algorithm so bots cannot trigger red alerts.
+	Suspect       bool   `json:"suspect"`
+	SuspectReason string `json:"suspect_reason,omitempty"`
 }
 
 type CitizenStatus string

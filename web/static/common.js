@@ -69,8 +69,9 @@ function applyI18n() {
 async function api(path, { method = 'GET', body, key } = {}) {
   const headers = { Accept: 'application/json', 'X-Lang': LANG };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const k = key ?? localStorage.getItem('dispatcherKey');
-  if (k) headers['X-Dispatcher-Key'] = k;
+  // Dispatcher auth: JWT from /auth/login (Bearer); legacy service key still accepted by the server.
+  const tok = key ?? localStorage.getItem('dispatcherToken');
+  if (tok) headers['Authorization'] = 'Bearer ' + tok;
   const res = await fetch(API + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   if (!res.ok) {
     let msg = t('error_generic');

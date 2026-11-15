@@ -33,8 +33,9 @@
   <form id="login-form" class="login-card" autocomplete="on">
     <div class="login-logo"><svg class="ico" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l7.5 2.8v5.9c0 4.7-3.2 8.2-7.5 9.7-4.3-1.5-7.5-5-7.5-9.7V5.6z"/><path d="M8.2 12h7.6"/><path d="M12.8 9l3 3-3 3"/></svg></div>
     <h2 data-i18n="login_title">Dispeçer girişi</h2>
-    <p class="hint" data-i18n="login_hint">Fövqəladə Hallar dispeçer paneli. Giriş üçün xidməti açarınızı daxil edin.</p>
-    <input id="key" type="password" name="dispatcher-key" autocomplete="current-password" data-i18n-ph="api_key" placeholder="Dispeçer açarı" required autofocus>
+    <p class="hint" data-i18n="login_hint">Fövqəladə Hallar dispeçer paneli. Hesabınızla daxil olun.</p>
+    <input id="username" type="text" name="username" autocomplete="username" data-i18n-ph="username" placeholder="İstifadəçi adı" required autofocus>
+    <input id="key" type="password" name="password" autocomplete="current-password" data-i18n-ph="password" placeholder="Parol" required>
     <button class="btn primary" type="submit"><span data-i18n="login">Daxil ol</span></button>
     <p id="login-error" class="hint" style="color:var(--red);min-height:1.2em"></p>
     <a href="/" class="hint" data-i18n="back_citizen">← Vətəndaş tətbiqinə qayıt</a>
@@ -116,33 +117,51 @@
   const layers = { roads: L.layerGroup().addTo(map), shelters: L.layerGroup().addTo(map), sos: L.layerGroup().addTo(map), brigades: L.layerGroup().addTo(map), alerts: L.layerGroup().addTo(map) };
   let ov = null;
   // --- authentication gate -------------------------------------------------
-  const loginBox = $('#login'), loginForm = $('#login-form'), keyInput = $('#key'), loginErr = $('#login-error');
-  let authed = false;
+  // JWT login (POST /auth/login) + RBAC: viewer < operator < admin. The token is
+  // kept per device; a 401 anywhere drops back to the login screen.
+  const loginBox = $('#login'), loginForm = $('#login-form'), userInput = $('#username'), keyInput = $('#key'), loginErr = $('#login-error');
+  let authed = false, session = { user: '', role: '' };
+  const RANK = { viewer: 1, operator: 2, admin: 3 };
+  const can = (need) => (RANK[session.role] || 0) >= RANK[need];
   function showLogin(msg = '') {
-    authed = false;
-    localStorage.removeItem('dispatcherKey');
+    authed = false; session = { user: '', role: '' };
+    localStorage.removeItem('dispatcherToken');
     $('#user').hidden = true;
     loginErr.textContent = msg;
     loginBox.hidden = false;
     document.body.classList.add('locked');
-    setTimeout(() => keyInput.focus(), 50);
+    setTimeout(() => userInput.focus(), 50);
   }
   function showApp() {
     authed = true;
     loginBox.hidden = true;
     document.body.classList.remove('locked');
     $('#user').hidden = false;
+    const chip = $('#user .chip span[data-i18n]') || $('#user .chip');
+    if (chip) chip.textContent = `${session.user} · ${t('role_' + session.role)}`;
   }
-  // Validate the key against the server (401 → stays on the login screen).
-  async function tryLogin(key) {
-    if (!key) return false;
+  // Resume: validate the stored token against the server.
+  async function resumeSession() {
+    if (!localStorage.getItem('dispatcherToken')) return false;
     try {
-      await api('/dispatch/session', { key });
-      localStorage.setItem('dispatcherKey', key);
+      const s = await api('/dispatch/session');
+      session = { user: s.user, role: s.role };
       showApp();
       return true;
     } catch (e) {
-      if (e.status === 401) return false;
+      if (e.status !== 401) toast(e.message, 'error');
+      return false;
+    }
+  }
+  async function tryLogin(username, password) {
+    try {
+      const r = await api('/auth/login', { method: 'POST', body: { username, password }, key: '' });
+      localStorage.setItem('dispatcherToken', r.token);
+      session = { user: r.user, role: r.role };
+      showApp();
+      return true;
+    } catch (e) {
+      if (e.status === 401 || e.status === 429) { loginErr.textContent = e.status === 429 ? e.message : t('login_failed'); return false; }
       toast(e.message, 'error');
       return false;
     }
@@ -150,22 +169,30 @@
   loginForm.onsubmit = async (e) => {
     e.preventDefault();
     const btn = loginForm.querySelector('button'); btn.disabled = true;
-    const ok = await tryLogin(keyInput.value.trim());
+    const ok = await tryLogin(userInput.value.trim(), keyInput.value);
     btn.disabled = false;
-    if (ok) { keyInput.value = ''; await load(); }
-    else { loginErr.textContent = t('login_failed'); keyInput.select(); }
+    if (ok) { keyInput.value = ''; await load(); } else keyInput.select();
   };
   $('#logout').onclick = () => showLogin();
+  // RBAC in the UI: controls above the user's role are visibly locked (the
+  // server enforces it anyway — the UI only mirrors the policy).
+  function applyRBAC() {
+    $$('[data-exec],[data-brigade],[data-chaos]').forEach(el => el.classList.toggle('rbac-locked', !can('admin')));
+    $$('[data-shelter],[data-resolve],[data-notify],#sim,#sim-prio').forEach(el => el.classList.toggle('rbac-locked', !can('operator')));
+    if (!can('admin')) $$('[data-exec],[data-brigade],[data-chaos]').forEach(el => el.title = t('rbac_admin_only'));
+  }
 
   const ROAD_COLOR = { open: '#34d399', congested: '#ffb547', blocked: '#ff5a5f' };
   const NEXT_ROAD = { open: 'blocked', blocked: 'congested', congested: 'open' };
   const BR_CLASS = { available: 'green', en_route: 'blue', busy: 'orange' };
 
+  let metrics = null;
   async function load() {
     if (!authed) return;
     try {
-      ov = await api('/dispatch/overview');
+      [ov, metrics] = await Promise.all([api('/dispatch/overview'), api('/metrics').catch(() => null)]);
       render();
+      applyRBAC();
     } catch (e) {
       if (e.status === 401) showLogin(t('unauthorized')); else toast(e.message, 'error');
     }
@@ -319,7 +346,12 @@
     // --- system
     const rt = ov.routing;
     $$('[data-chaos]').forEach(b => b.classList.toggle('active', (rt.chaos || 'off') === b.dataset.chaos));
-    $('#sys').innerHTML = `
+    const sec = ov.security || {}, lat = metrics?.latency;
+    const secHtml = `
+      <dt>${esc(t('security'))}</dt><dd>${sec.flood_mode ? '<span class="badge red">🛡️ ' + esc(t('flood_mode')) + '</span>' : '<span class="badge green">' + esc(t('normal_traffic')) + '</span>'} · SOS/10s: <b>${sec.sos_10s ?? 0}</b>/${sec.threshold_10s ?? ''} · ${esc(t('suspect_hidden'))}: <b>${ov.suspect_sos ?? 0}</b> · ${esc(t('duplicates'))}: <b>${sec.duplicates_dropped ?? 0}</b></dd>
+      ${lat ? `<dt>${esc(t('latency'))}</dt><dd>${esc(t('avg'))} <b style="color:${lat.avg_ms < 300 ? 'var(--green)' : 'var(--red)'}">${lat.avg_ms} ms</b> · p95 ${lat.p95_ms} ms · ${lat.rps} req/s${lat.sos ? ` · SOS: ${lat.sos.avg_ms} ms (${lat.sos.requests})` : ''}</dd>` : ''}
+      <dt>${esc(t('role'))}</dt><dd><span class="badge blue">${esc(session.user)} · ${esc(t('role_' + session.role))}</span></dd>`;
+    $('#sys').innerHTML = secHtml + `
       <dt>${esc(t('routing'))}</dt><dd>${rt.degraded ? '<span class="badge red">' + icon('wifi_off', 12) + ' ' + esc(t('degraded')) + '</span> ' : '<span class="badge green">' + esc(t('online')) + '</span> '}${rt.provider === 'google' ? '<span class="badge green">Google Routes ✓</span>' : rt.provider === 'osrm' ? '<span class="badge green">OSRM ✓</span>' : '<span class="badge yellow">' + esc(t('routing_simulated')) + '</span>'}${rt.google_configured && !rt.google_available ? ' <span class="badge red">Google ✗</span>' : ''}${rt.breaker_open ? ' <span class="badge orange">breaker open</span>' : ''} · keş ${rt.cache_size}</dd>
       ${rt.chaos ? `<dt>Chaos</dt><dd><span class="badge red">${esc(rt.chaos)}</span></dd>` : ''}
       <dt>Xəritə</dt><dd>${map.provider === 'google' ? '<span class="badge green">Google Maps</span>' : '<span class="badge">OpenStreetMap</span>'}</dd>
@@ -395,6 +427,8 @@
   connectSSE(ev => {
     if (ev.type === 'alert.created') toast(`🔴 ${ev.data.message}`, 'error', 9000);
     else if (ev.type === 'routing.status') toast(ev.data.degraded ? `📡 ${t('degraded')}: ${ev.data.last_error || ''}` : `✅ ${t('online_again')}`, ev.data.degraded ? 'warn' : 'ok', 6000);
+    else if (ev.type === 'security.flood') toast(ev.data.flood_mode ? `🛡️ ${t('flood_mode')} — ${ev.data.sos_10s} SOS/10s` : `✅ ${t('normal_traffic')}`, ev.data.flood_mode ? 'error' : 'ok', 8000);
+    else if (ev.type === 'security.stats') { if (ov) { ov.security = ev.data; } reload(); return; }
     else if (ev.type === 'sos.priority') toast(`♿ ${t('priority_critical')} · ${t('sos_' + ev.data.type)} · ${zoneName(ev.data.zone_id)}`, 'error', 9000);
     else if (ev.type === 'notification.sent') toast(`📩 SMS → ${ev.data.to} (${ev.data.reason})`, 'info', 4000);
     else if (ev.type === 'sos.created' && ev.data.priority !== 1) toast(`${SOS_ICON[ev.data.type] || '🆘'} SOS · ${zoneName(ev.data.zone_id)}`, 'warn', 3000);
@@ -404,7 +438,7 @@
   document.addEventListener('langchange', render);
 
   // Resume a previous session if its key is still valid, otherwise ask to log in.
-  if (await tryLogin(localStorage.getItem('dispatcherKey'))) await load();
+  if (await resumeSession()) await load();
   else showLogin();
 })();
 </script>

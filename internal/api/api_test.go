@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nihat1337/urban-crisis-evacuation/internal/auth"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/crisis"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/events"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/routing"
@@ -33,8 +34,10 @@ func newTestServer(t *testing.T) *httptest.Server {
 	hub := events.NewHub()
 	eng := crisis.New(crisis.DefaultConfig(), st)
 	router := routing.NewChain("simulated", nil, routing.NewSimulated(1.3))
-	svc := service.New(service.Config{ShelterWarnPct: 90, MaxAlternatives: 2}, st, router, eng, hub, log)
-	h := New(Config{DispatcherKey: testKey, RateLimitRPS: 1000, RateLimitBurst: 1000, DefaultLang: "az", Version: "test"}, svc, hub, log)
+	svc := service.New(service.Config{ShelterWarnPct: 90, MaxAlternatives: 2, FloodThreshold: 25, DedupeWindow: 30 * time.Second}, st, router, eng, hub, log)
+	h := New(Config{DispatcherKey: testKey, RateLimitRPS: 100000, RateLimitBurst: 100000, DefaultLang: "az", Version: "test",
+		JWTSecret: []byte("test-secret"), Users: auth.ParseUsers("admin:a:admin,op:o:operator,view:v:viewer"),
+		SOSRatePerMin: 6000000, SOSBurst: 100000}, svc, hub, log)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
@@ -327,5 +330,169 @@ func TestExternalRoutingOutageKeepsServing(t *testing.T) {
 	_, out = do(t, "GET", srv.URL+"/api/v1/evacuation/plan?lat=40.387&lng=49.830", nil, "")
 	if out["mode"] != "online" {
 		t.Fatalf("expected online after recovery, got %v", out["mode"])
+	}
+}
+
+
+func login(t *testing.T, url, user, pass string) string {
+	t.Helper()
+	resp, out := do(t, "POST", url+"/api/v1/auth/login", map[string]any{"username": user, "password": pass}, "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("login %s: %d %v", user, resp.StatusCode, out)
+	}
+	return out["token"].(string)
+}
+
+func doAuth(t *testing.T, method, url string, body any, token string) (*http.Response, map[string]any) {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, _ := http.NewRequest(method, url, rd)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp, out
+}
+
+// Jury scenario #4b: JWT + RBAC. Critical operations (brigade dispatch via
+// alert execution, chaos switch, brigade status) are admin-only; operators
+// manage field data; viewers only read.
+func TestJWTRoleBasedAccess(t *testing.T) {
+	srv := newTestServer(t)
+	resp, _ := do(t, "POST", srv.URL+"/api/v1/auth/login", map[string]any{"username": "admin", "password": "wrong"}, "")
+	if resp.StatusCode != 401 {
+		t.Fatalf("bad password must be 401, got %d", resp.StatusCode)
+	}
+	admin, op, view := login(t, srv.URL, "admin", "a"), login(t, srv.URL, "op", "o"), login(t, srv.URL, "view", "v")
+
+	// everyone can read the panel
+	for _, tok := range []string{admin, op, view} {
+		if resp, _ := doAuth(t, "GET", srv.URL+"/api/v1/dispatch/overview", nil, tok); resp.StatusCode != 200 {
+			t.Fatalf("overview should be readable, got %d", resp.StatusCode)
+		}
+	}
+	// viewer cannot change field data; operator can
+	if resp, _ := doAuth(t, "PATCH", srv.URL+"/api/v1/dispatch/roads/r-1", map[string]any{"status": "congested"}, view); resp.StatusCode != 403 {
+		t.Fatalf("viewer road patch must be 403, got %d", resp.StatusCode)
+	}
+	if resp, _ := doAuth(t, "PATCH", srv.URL+"/api/v1/dispatch/roads/r-1", map[string]any{"status": "congested"}, op); resp.StatusCode != 200 {
+		t.Fatalf("operator road patch must be 200, got %d", resp.StatusCode)
+	}
+	// only admin may run critical operations
+	if resp, _ := doAuth(t, "POST", srv.URL+"/api/v1/dispatch/chaos", map[string]any{"routing": "off"}, op); resp.StatusCode != 403 {
+		t.Fatalf("operator chaos must be 403, got %d", resp.StatusCode)
+	}
+	if resp, _ := doAuth(t, "PATCH", srv.URL+"/api/v1/dispatch/brigades/br-1", map[string]any{"status": "busy"}, op); resp.StatusCode != 403 {
+		t.Fatalf("operator brigade patch must be 403, got %d", resp.StatusCode)
+	}
+	if resp, _ := doAuth(t, "PATCH", srv.URL+"/api/v1/dispatch/brigades/br-1", map[string]any{"status": "busy"}, admin); resp.StatusCode != 200 {
+		t.Fatalf("admin brigade patch must be 200, got %d", resp.StatusCode)
+	}
+	// brigade dispatch through an alert: create a cluster, operator denied, admin allowed
+	var alertID string
+	for i := 1; i <= 4; i++ {
+		_, out := do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{"citizen_id": fmt.Sprintf("rb%d", i), "type": "fire", "lat": 40.3870 + float64(i)*0.0003, "lng": 49.8300}, "")
+		if a, _ := out["alert"].(map[string]any); a != nil {
+			alertID, _ = a["id"].(string)
+		}
+	}
+	if alertID == "" {
+		t.Fatal("expected an alert")
+	}
+	if resp, _ := doAuth(t, "POST", srv.URL+"/api/v1/dispatch/alerts/"+alertID+"/execute", map[string]any{"action": "dispatch_brigade"}, op); resp.StatusCode != 403 {
+		t.Fatalf("operator must not dispatch brigades, got %d", resp.StatusCode)
+	}
+	if resp, out := doAuth(t, "POST", srv.URL+"/api/v1/dispatch/alerts/"+alertID+"/execute", map[string]any{"action": "dispatch_brigade"}, admin); resp.StatusCode != 200 {
+		t.Fatalf("admin dispatch must be 200, got %d %v", resp.StatusCode, out)
+	}
+	// tampered token is rejected
+	if resp, _ := doAuth(t, "GET", srv.URL+"/api/v1/dispatch/overview", nil, admin+"x"); resp.StatusCode != 401 {
+		t.Fatalf("tampered token must be 401, got %d", resp.StatusCode)
+	}
+	_, out := doAuth(t, "GET", srv.URL+"/api/v1/dispatch/session", nil, op)
+	if out["role"] != "operator" || out["user"] != "op" {
+		t.Fatalf("session should expose role, got %v", out)
+	}
+}
+
+// Jury scenario #4a: SOS flood. Duplicates are filtered, a flood switches
+// anonymous signals to "suspect" (kept off the live queue, ignored by the
+// crisis engine) and the API keeps answering fast.
+func TestSOSFloodProtection(t *testing.T) {
+	srv := newTestServer(t)
+	// duplicate from the same citizen inside the window → 200 duplicate, nothing new
+	resp, out := do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{"citizen_id": "dup-1", "type": "fire", "lat": 40.3870, "lng": 49.8300}, "")
+	if resp.StatusCode != 201 {
+		t.Fatalf("first sos: %d", resp.StatusCode)
+	}
+	firstID := out["sos"].(map[string]any)["id"]
+	resp, out = do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{"citizen_id": "dup-1", "type": "fire", "lat": 40.3870, "lng": 49.8300}, "")
+	if resp.StatusCode != 200 || out["duplicate"] != true || out["sos"].(map[string]any)["id"] != firstID {
+		t.Fatalf("expected duplicate, got %d %v", resp.StatusCode, out)
+	}
+	// outside a flood, a different person at the same spot is a legitimate second signal
+	resp, out = do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{"citizen_id": "neighbour", "type": "fire", "lat": 40.3870, "lng": 49.8300}, "")
+	if resp.StatusCode != 201 || out["duplicate"] == true {
+		t.Fatalf("second person at same spot must be accepted outside a flood, got %d %v", resp.StatusCode, out)
+	}
+
+	// flood: 60 anonymous signals from distinct spots → after the threshold they become suspect
+	start := time.Now()
+	suspects, created := 0, 0
+	for i := 0; i < 60; i++ {
+		resp, out := do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{
+			"citizen_id": fmt.Sprintf("bot-%d", i), "type": "collapse", "lat": 40.4200 + float64(i)*0.0015, "lng": 49.8600 + float64(i%7)*0.0015}, "")
+		if resp.StatusCode != 201 {
+			t.Fatalf("flood sos %d: %d %v", i, resp.StatusCode, out)
+		}
+		created++
+		if out["sos"].(map[string]any)["suspect"] == true {
+			suspects++
+		}
+	}
+	elapsed := time.Since(start)
+	if suspects == 0 || suspects > created-20 {
+		t.Fatalf("expected suspects after threshold (25/10s), got %d of %d", suspects, created)
+	}
+	if avg := elapsed / time.Duration(created); avg > 300*time.Millisecond {
+		t.Fatalf("average SOS latency too high: %s", avg)
+	}
+	// during the flood, a bot re-using an already reported spot+type is dropped as a duplicate
+	resp, out = do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{"citizen_id": "bot-rotated-id", "type": "collapse", "lat": 40.4200, "lng": 49.8600}, "")
+	if resp.StatusCode != 200 || out["duplicate"] != true {
+		t.Fatalf("same-spot duplicate expected during flood, got %d %v", resp.StatusCode, out)
+	}
+	// live queue hides suspects, security block reports the flood
+	_, ov := do(t, "GET", srv.URL+"/api/v1/dispatch/overview", nil, testKey)
+	if int(ov["suspect_sos"].(float64)) != suspects {
+		t.Fatalf("overview suspect_sos=%v want %d", ov["suspect_sos"], suspects)
+	}
+	for _, s := range ov["sos"].([]any) {
+		if s.(map[string]any)["suspect"] == true {
+			t.Fatal("suspect SOS must not appear in the live queue")
+		}
+	}
+	sec := ov["security"].(map[string]any)
+	if sec["flood_mode"] != true || sec["duplicates_dropped"].(float64) < 2 {
+		t.Fatalf("security status wrong: %v", sec)
+	}
+	// no red alert from bots: the only alerts allowed came from real signals (none here)
+	for _, a := range ov["alerts"].([]any) {
+		if a.(map[string]any)["zone_id"] == "binagadi" || a.(map[string]any)["zone_id"] == "sabunchu" {
+			t.Fatalf("bot flood must not trigger alerts: %v", a)
+		}
+	}
+	_, m := do(t, "GET", srv.URL+"/api/v1/metrics", nil, "")
+	if m["latency"].(map[string]any)["sos"] == nil {
+		t.Fatalf("metrics should report sos latency: %v", m)
 	}
 }

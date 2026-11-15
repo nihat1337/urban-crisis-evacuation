@@ -360,3 +360,6 @@ body.light .leaflet-bottom.leaflet-left { bottom: 0; }
   .user .chip { display: none; }
   #toasts { top: 64px; bottom: auto; left: 12px; right: 12px; max-width: none; }
 }
+
+/* RBAC: controls above the signed-in role are visibly locked (server enforces it too) */
+.rbac-locked { opacity: .4; pointer-events: none; filter: grayscale(.6); }

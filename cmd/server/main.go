@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nihat1337/urban-crisis-evacuation/internal/api"
+	"github.com/nihat1337/urban-crisis-evacuation/internal/auth"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/config"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/crisis"
 	"github.com/nihat1337/urban-crisis-evacuation/internal/events"
@@ -64,7 +65,8 @@ func main() {
 		Window: cfg.CrisisWindow, RadiusM: cfg.CrisisRadiusM,
 		MinSignals: cfg.CrisisMinSignals, ShelterAlertPct: cfg.ShelterAlertPct,
 	}, st)
-	svc := service.New(service.Config{ShelterWarnPct: cfg.ShelterWarnPct, MaxAlternatives: 2}, st, router, engine, hub, log).
+	svc := service.New(service.Config{ShelterWarnPct: cfg.ShelterWarnPct, MaxAlternatives: 2,
+		DedupeWindow: cfg.SOSDedupeWindow, FloodThreshold: cfg.FloodThreshold}, st, router, engine, hub, log).
 		WithNotifier(notify.NewLogSender(log), cfg.PublicURL) // NOTIFY_PROVIDER=simulated; a real gateway plugs in here
 	log.Info("notifications", "provider", cfg.NotifyProvider, "public_url", cfg.PublicURL)
 	svc.StartMonitors(ctx) // pushes routing.status events when the external API goes down / comes back
@@ -72,7 +74,14 @@ func main() {
 	handler := api.New(api.Config{
 		DispatcherKey: cfg.DispatcherKey, RateLimitRPS: cfg.RateLimitRPS, RateLimitBurst: cfg.RateLimitBurst,
 		DefaultLang: cfg.DefaultLang, Version: version, GoogleMapsKey: cfg.GoogleMapsKey,
+		JWTSecret: []byte(cfg.JWTSecret), Users: auth.ParseUsers(cfg.DispatchUsers), TokenTTL: cfg.TokenTTL,
+		TrustProxy: cfg.TrustProxy, SOSRatePerMin: cfg.SOSRatePerMin, SOSBurst: cfg.SOSBurst,
 	}, svc, hub, log)
+	if cfg.JWTSecret == "change-me-in-production-9f1c" {
+		log.Warn("JWT_SECRET is the default demo value — set a real secret in production")
+	}
+	log.Info("security", "users", len(auth.ParseUsers(cfg.DispatchUsers)), "sos_rate_per_min", cfg.SOSRatePerMin,
+		"dedupe_window", cfg.SOSDedupeWindow.String(), "flood_threshold_10s", cfg.FloodThreshold, "trust_proxy", cfg.TrustProxy)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
