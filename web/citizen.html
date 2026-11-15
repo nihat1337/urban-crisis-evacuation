@@ -10,7 +10,8 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap">
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body class="light">
+<body>
+<script>(function(){try{var t=localStorage.getItem("theme")||"system";var l=t==="light"||(t==="system"&&window.matchMedia("(prefers-color-scheme: light)").matches);document.body.classList.toggle("light",l);}catch(e){}})();</script>
 <header class="top">
   <div class="brand"><span class="logo"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l7.5 2.8v5.9c0 4.7-3.2 8.2-7.5 9.7-4.3-1.5-7.5-5-7.5-9.7V5.6z"/><path d="M8.2 12h7.6"/><path d="M12.8 9l3 3-3 3"/></svg></span><span class="name" data-i18n="app_title">Şəhər Təhlükəsizlik Şəbəkəsi</span></div>
   <nav>
@@ -19,6 +20,7 @@
   </nav>
   <div class="spacer"></div>
   <span id="live" class="live"><span class="dot"></span><span class="txt">…</span></span>
+  <button id="theme" class="btn small" type="button" aria-label="Theme" style="min-width:38px;justify-content:center">🖥️</button>
   <select id="lang" title="Language" aria-label="Language"></select>
 </header>
 
@@ -90,7 +92,7 @@
 <script>
 (async function () {
   await initI18n();
-  const map = await makeMap('map', { light: true });
+  const map = await makeMap('map');
   const layers = { shelters: L.layerGroup().addTo(map), routes: L.layerGroup().addTo(map), schematic: L.layerGroup() };
   let origin = null, originMarker = null, zones = [], plan = null, fitted = false;
 

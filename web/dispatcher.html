@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body class="dispatch-page">
+<script>(function(){try{var t=localStorage.getItem("theme")||"system";var l=t==="light"||(t==="system"&&window.matchMedia("(prefers-color-scheme: light)").matches);document.body.classList.toggle("light",l);}catch(e){}})();</script>
 <header class="top">
   <div class="brand"><span class="logo"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.8l7.5 2.8v5.9c0 4.7-3.2 8.2-7.5 9.7-4.3-1.5-7.5-5-7.5-9.7V5.6z"/><path d="M8.2 12h7.6"/><path d="M12.8 9l3 3-3 3"/></svg></span><span class="name"><span data-i18n="app_title">Şəhər Təhlükəsizlik Şəbəkəsi</span><small data-i18n="dispatcher">Dispeçer</small></span></div>
   <nav>
@@ -23,6 +24,7 @@
     <button id="logout" class="btn small ghost" data-i18n-title="logout"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4M6 12h10"/></svg><span data-i18n="logout">Çıxış</span></button>
   </div>
   <span id="live" class="live"><span class="dot"></span><span class="txt">…</span></span>
+  <button id="theme" class="btn small" type="button" aria-label="Theme" style="min-width:38px;justify-content:center">🖥️</button>
   <select id="lang" title="Language" aria-label="Language"></select>
 </header>
 

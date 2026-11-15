@@ -6,6 +6,31 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 let DICT = {};
 let LANG = localStorage.getItem('lang') || document.documentElement.lang || 'az';
 
+/* ---- theme: follows the OS (prefers-color-scheme) unless the user picks one ---- */
+const THEME_KEY = 'theme'; // system | light | dark
+const themePref = () => { try { return localStorage.getItem(THEME_KEY) || 'system'; } catch (_) { return 'system'; } };
+const resolvedLight = (pref = themePref()) => pref === 'light' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
+function applyTheme() {
+  document.body.classList.toggle('light', resolvedLight());
+  const b = $('#theme');
+  if (!b) return;
+  const p = themePref();
+  b.textContent = p === 'system' ? '🖥️' : p === 'light' ? '☀️' : '🌙';
+  b.title = t(p === 'system' ? 'theme_system' : p === 'light' ? 'theme_light' : 'theme_dark');
+}
+function initTheme() {
+  applyTheme();
+  const b = $('#theme');
+  if (b) b.onclick = () => {
+    const order = ['system', 'light', 'dark'];
+    const next = order[(order.indexOf(themePref()) + 1) % order.length];
+    try { localStorage.setItem(THEME_KEY, next); } catch (_) { /* ignore */ }
+    location.reload(); // map tiles/styles are chosen at start-up
+  };
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (themePref() === 'system') location.reload(); });
+  document.addEventListener('langchange', applyTheme);
+}
+
 async function initI18n() {
   try {
     const info = await (await fetch(`${API}/i18n`)).json();
@@ -171,7 +196,7 @@ const GOOGLE_NIGHT_STYLE = [
 // when the server has a Google Maps key, otherwise OpenStreetMap. All markers,
 // routes and click handlers are Leaflet, so the provider swap is invisible to
 // the rest of the app — and any Google failure falls back to OSM.
-async function makeMap(id, { light = false } = {}) {
+async function makeMap(id, { light = document.body.classList.contains('light') } = {}) {
   const map = L.map(id, { zoomControl: true }).setView([40.40, 49.86], 12);
   let cfg = {};
   try { cfg = await (await fetch(`${API}/config`)).json(); } catch (_) { /* offline */ }
@@ -200,3 +225,6 @@ async function makeMap(id, { light = false } = {}) {
   map.provider = 'osm';
   return map;
 }
+
+// Theme must be in place before any page script runs (scripts load at the end of <body>).
+initTheme();
