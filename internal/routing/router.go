@@ -29,10 +29,13 @@ type Router interface {
 
 // Status is exposed on the health/overview endpoints.
 type Status struct {
-	Mode          string `json:"mode"`
-	OSRMAvailable bool   `json:"osrm_available"`
-	BreakerOpen   bool   `json:"breaker_open"`
-	LastError     string `json:"last_error,omitempty"`
+	Mode             string `json:"mode"`
+	Provider         string `json:"provider"` // primary provider right now: google | osrm | simulated
+	GoogleConfigured bool   `json:"google_configured"`
+	GoogleAvailable  bool   `json:"google_available"`
+	OSRMAvailable    bool   `json:"osrm_available"`
+	BreakerOpen      bool   `json:"breaker_open"`
+	LastError        string `json:"last_error,omitempty"`
 }
 
 // segmentDistM returns the distance in metres from p to segment a-b using an

@@ -30,6 +30,9 @@ services:
       DISPATCHER_API_KEY: ${DISPATCHER_API_KEY:-dispatcher-secret}
       ROUTING_MODE: ${ROUTING_MODE:-auto}
       OSRM_URL: ${OSRM_URL:-https://router.project-osrm.org}
+      # Optional Google Maps Platform keys (put them in .env — never commit them).
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      GOOGLE_DIRECTIONS_API_KEY: ${GOOGLE_DIRECTIONS_API_KEY:-}
       CRISIS_WINDOW: ${CRISIS_WINDOW:-5m}
       CRISIS_RADIUS_M: ${CRISIS_RADIUS_M:-500}
       CRISIS_MIN_SIGNALS: ${CRISIS_MIN_SIGNALS:-4}

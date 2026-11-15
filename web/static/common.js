@@ -103,13 +103,67 @@ function debounce(fn, ms) {
   let tm; return (...a) => { clearTimeout(tm); tm = setTimeout(() => fn(...a), ms); };
 }
 
-function makeMap(id) {
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    s.onload = resolve; s.onerror = () => reject(new Error('failed to load ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+// Google "night mode" style so the base map matches the dark UI.
+const GOOGLE_NIGHT_STYLE = [
+  { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#746855' }] },
+  { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+  { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#263c3f' }] },
+  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#6b9a76' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#212a37' }] },
+  { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#9ca5b3' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#746855' }] },
+  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#1f2835' }] },
+  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#f3d19c' }] },
+  { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#2f3948' }] },
+  { featureType: 'transit.station', elementType: 'labels.text.fill', stylers: [{ color: '#d59563' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#515c6d' }] },
+  { featureType: 'water', elementType: 'labels.text.stroke', stylers: [{ color: '#17263c' }] },
+];
+
+// makeMap builds the Leaflet map. Base layer: Google Maps (via GoogleMutant)
+// when the server has a Google Maps key, otherwise OpenStreetMap. All markers,
+// routes and click handlers are Leaflet, so the provider swap is invisible to
+// the rest of the app — and any Google failure falls back to OSM.
+async function makeMap(id) {
   const map = L.map(id, { zoomControl: true }).setView([40.40, 49.86], 12);
+  let cfg = {};
+  try { cfg = await (await fetch(`${API}/config`)).json(); } catch (_) { /* offline */ }
+  if (cfg.google_maps_key) {
+    try {
+      const ready = new Promise(res => { window.__gmapsReady = res; });
+      await loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(cfg.google_maps_key)}&v=weekly&language=${LANG}&callback=__gmapsReady`);
+      await ready;
+      await loadScript('https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.1/dist/Leaflet.GoogleMutant.js');
+      const google = L.gridLayer.googleMutant({ type: 'roadmap', styles: GOOGLE_NIGHT_STYLE, maxZoom: 20 });
+      const satellite = L.gridLayer.googleMutant({ type: 'hybrid', maxZoom: 20 });
+      google.addTo(map);
+      L.control.layers({ 'Google': google, 'Google Satellite': satellite }, null, { position: 'bottomleft', collapsed: true }).addTo(map);
+      map.provider = 'google';
+      return map;
+    } catch (e) {
+      console.warn('Google Maps unavailable, falling back to OpenStreetMap:', e.message);
+    }
+  }
   // Plain OSM tiles need no API key; the dark look comes from a CSS filter (.dark-tiles).
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     className: 'dark-tiles',
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(map);
+  map.provider = 'osm';
   return map;
 }

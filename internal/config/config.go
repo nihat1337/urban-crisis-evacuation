@@ -23,8 +23,14 @@ type Config struct {
 	OSRMURL         string
 	OSRMProfile     string
 	OSRMTimeout     time.Duration
-	RoutingMode     string // auto | osrm | simulated
+	RoutingMode     string // auto | google | osrm | simulated
 	WalkingSpeedMps float64
+
+	// Google Maps Platform (optional). The browser key renders the base map
+	// (Maps JavaScript API, HTTP-referrer restricted); the server key calls the
+	// Directions API (walking). Without keys the system uses OSM tiles + OSRM.
+	GoogleMapsKey       string
+	GoogleDirectionsKey string
 
 	CrisisWindow     time.Duration
 	CrisisRadiusM    float64
@@ -54,6 +60,9 @@ func Load() Config {
 		OSRMTimeout:     envDuration("OSRM_TIMEOUT", 4*time.Second),
 		RoutingMode:     env("ROUTING_MODE", "auto"),
 		WalkingSpeedMps: envFloat("WALKING_SPEED_MPS", 1.3),
+
+		GoogleMapsKey:       env("GOOGLE_MAPS_API_KEY", ""),
+		GoogleDirectionsKey: env("GOOGLE_DIRECTIONS_API_KEY", env("GOOGLE_MAPS_API_KEY", "")),
 
 		CrisisWindow:     envDuration("CRISIS_WINDOW", 5*time.Minute),
 		CrisisRadiusM:    envFloat("CRISIS_RADIUS_M", 500),

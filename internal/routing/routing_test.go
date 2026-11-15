@@ -139,3 +139,60 @@ func TestAccessibleRouteAvoidsNonAccessibleRoads(t *testing.T) {
 		t.Fatalf("accessible route must avoid the stairs diagonal: %+v", acc)
 	}
 }
+
+func TestDecodePolyline(t *testing.T) {
+	// Google's documented example.
+	pts := decodePolyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@")
+	want := []domain.Point{{Lat: 38.5, Lng: -120.2}, {Lat: 40.7, Lng: -120.95}, {Lat: 43.252, Lng: -126.453}}
+	if len(pts) != len(want) {
+		t.Fatalf("got %d points", len(pts))
+	}
+	for i := range want {
+		if pts[i] != want[i] {
+			t.Fatalf("point %d: got %+v want %+v", i, pts[i], want[i])
+		}
+	}
+}
+
+func TestChainPrefersGoogleThenFallsBack(t *testing.T) {
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mode") != "walking" || r.URL.Query().Get("key") != "k" {
+			t.Errorf("unexpected query %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"status":"OK","routes":[{"overview_polyline":{"points":"_p~iF~ps|U_ulLnnqC"},"legs":[{"distance":{"value":1200},"duration":{"value":900}}]}]}`))
+	}))
+	defer google.Close()
+	osrm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"Ok","routes":[{"distance":1500,"duration":1100,"geometry":{"coordinates":[[49.8,40.4],[49.81,40.41]]}}]}`))
+	}))
+	defer osrm.Close()
+
+	g := NewGoogleDirections("k", time.Second)
+	g.BaseURL = google.URL
+	ch := NewChain("auto", NewOSRM(osrm.URL, "driving", time.Second), NewSimulated(1.3))
+	ch.Google = g
+
+	r, err := ch.Route(context.Background(), p(40.4, 49.8), p(40.41, 49.81), squareRoads(), Options{})
+	if err != nil || r.Source != "google" || r.DistanceM != 1200 || r.DurationS != 900 || len(r.Geometry) != 2 {
+		t.Fatalf("expected google route, got %+v %v", r, err)
+	}
+	if st := ch.Status(); st.Provider != "google" || !st.GoogleAvailable || !st.OSRMAvailable {
+		t.Fatalf("unexpected status %+v", st)
+	}
+
+	// Google denies the request (bad key / billing) → OSRM takes over, breaker opens after 3.
+	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"REQUEST_DENIED","error_message":"billing"}`))
+	}))
+	defer denied.Close()
+	g.BaseURL = denied.URL
+	for i := 0; i < 3; i++ {
+		r, err = ch.Route(context.Background(), p(40.4, 49.8), p(40.41, 49.81), squareRoads(), Options{})
+		if err != nil || r.Source != "osrm" {
+			t.Fatalf("expected osrm fallback, got %+v %v", r, err)
+		}
+	}
+	if st := ch.Status(); st.GoogleAvailable || st.Provider != "osrm" {
+		t.Fatalf("google breaker should be open: %+v", st)
+	}
+}

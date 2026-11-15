@@ -73,11 +73,10 @@
 <script src="/static/common.js"></script>
 <script>
 (async function () {
-  const map = makeMap('map');
+  await initI18n();
+  const map = await makeMap('map');
   const layers = { roads: L.layerGroup().addTo(map), shelters: L.layerGroup().addTo(map), sos: L.layerGroup().addTo(map), brigades: L.layerGroup().addTo(map), alerts: L.layerGroup().addTo(map) };
   let ov = null;
-
-  await initI18n();
   const keyInput = $('#key');
   keyInput.value = localStorage.getItem('dispatcherKey') || 'dispatcher-secret';
   localStorage.setItem('dispatcherKey', keyInput.value);
@@ -198,7 +197,8 @@
     // --- system
     const rt = ov.routing;
     $('#sys').innerHTML = `
-      <dt>${esc(t('routing'))}</dt><dd>${rt.mode} · ${rt.osrm_available ? '<span class="badge green">OSRM ✓</span>' : '<span class="badge yellow">' + esc(t('routing_simulated')) + '</span>'}</dd>
+      <dt>${esc(t('routing'))}</dt><dd>${rt.mode} · ${rt.provider === 'google' ? '<span class="badge green">Google Directions ✓</span>' : rt.provider === 'osrm' ? '<span class="badge green">OSRM ✓</span>' : '<span class="badge yellow">' + esc(t('routing_simulated')) + '</span>'}${rt.google_configured && !rt.google_available ? ' <span class="badge red">Google ✗</span>' : ''}</dd>
+      <dt>Xəritə</dt><dd>${map.provider === 'google' ? '<span class="badge green">Google Maps</span>' : '<span class="badge">OpenStreetMap</span>'}</dd>
       <dt>${esc(t('store'))}</dt><dd>${esc(ov.store)}</dd>
       <dt>Böhran qaydası</dt><dd>≥${ov.crisis.min_signals} SOS / ${Math.round(ov.crisis.window / 6e10)} ${esc(t('min'))} / ${ov.crisis.radius_m} m · &gt;${ov.crisis.shelter_alert_pct}%</dd>
       <dt>${esc(t('citizens'))}</dt><dd>${Object.entries(ov.citizens).map(([k, v]) => `${esc(t('status_' + k))}: ${v}`).join(' · ') || '—'}</dd>

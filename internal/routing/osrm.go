@@ -6,67 +6,37 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/nihat1337/urban-crisis-evacuation/internal/domain"
 )
 
-// OSRM calls an external OSRM-compatible routing API. It carries a small
-// circuit breaker: after MaxFailures consecutive errors it stops calling the
-// API for Cooldown so a dead provider cannot slow every request down.
+// OSRM calls an external OSRM-compatible routing API behind a circuit breaker
+// so a dead provider cannot slow every request down.
 type OSRM struct {
-	BaseURL     string
-	Profile     string
-	Client      *http.Client
-	MaxFailures int
-	Cooldown    time.Duration
+	BaseURL string
+	Profile string
+	Client  *http.Client
 	// SpeedMps, when > 0, replaces OSRM's (driving) duration with a pedestrian
 	// estimate so durations are comparable with the simulated router.
 	SpeedMps float64
 
-	mu        sync.Mutex
-	failures  int
-	openUntil time.Time
-	lastErr   string
+	breaker
 }
 
 func NewOSRM(baseURL, profile string, timeout time.Duration) *OSRM {
 	return &OSRM{
-		BaseURL:     baseURL,
-		Profile:     profile,
-		Client:      &http.Client{Timeout: timeout},
-		MaxFailures: 3,
-		Cooldown:    60 * time.Second,
+		BaseURL: baseURL,
+		Profile: profile,
+		Client:  &http.Client{Timeout: timeout},
+		breaker: newBreaker(3, 60*time.Second),
 	}
 }
 
 func (o *OSRM) Name() string { return "osrm" }
 
 // Healthy reports whether the breaker is closed (API believed reachable).
-func (o *OSRM) Healthy() (ok bool, lastErr string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return time.Now().After(o.openUntil), o.lastErr
-}
-
-func (o *OSRM) recordFailure(err error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.failures++
-	o.lastErr = err.Error()
-	if o.failures >= o.MaxFailures {
-		o.openUntil = time.Now().Add(o.Cooldown)
-		o.failures = 0
-	}
-}
-
-func (o *OSRM) recordSuccess() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.failures = 0
-	o.lastErr = ""
-}
+func (o *OSRM) Healthy() (ok bool, lastErr string) { return o.healthy() }
 
 type osrmResponse struct {
 	Code    string `json:"code"`
@@ -83,7 +53,7 @@ type osrmResponse struct {
 // Route ignores roads: OSRM only knows the real street network. Closures are
 // handled by the Chain router which decides when to bypass OSRM.
 func (o *OSRM) Route(ctx context.Context, from, to domain.Point, _ []domain.Road, _ Options) (domain.Route, error) {
-	if ok, _ := o.Healthy(); !ok {
+	if ok, _ := o.healthy(); !ok {
 		return domain.Route{}, fmt.Errorf("%w: circuit breaker open", ErrUnavailable)
 	}
 	url := fmt.Sprintf("%s/route/v1/%s/%f,%f;%f,%f?overview=full&geometries=geojson&steps=false",
@@ -94,25 +64,25 @@ func (o *OSRM) Route(ctx context.Context, from, to domain.Point, _ []domain.Road
 	}
 	resp, err := o.Client.Do(req)
 	if err != nil {
-		o.recordFailure(err)
+		o.fail(err)
 		return domain.Route{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
 		err := fmt.Errorf("osrm http %d", resp.StatusCode)
-		o.recordFailure(err)
+		o.fail(err)
 		return domain.Route{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	var body osrmResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		o.recordFailure(err)
+		o.fail(err)
 		return domain.Route{}, fmt.Errorf("%w: decode: %v", ErrUnavailable, err)
 	}
 	if body.Code != "Ok" || len(body.Routes) == 0 {
 		// A "NoRoute" is a valid answer, not an outage: do not trip the breaker.
 		return domain.Route{}, fmt.Errorf("osrm: %s %s", body.Code, body.Message)
 	}
-	o.recordSuccess()
+	o.success()
 	r := body.Routes[0]
 	geom := make([]domain.Point, 0, len(r.Geometry.Coordinates))
 	for _, c := range r.Geometry.Coordinates {

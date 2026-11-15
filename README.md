@@ -90,6 +90,21 @@ curl -s localhost:8080/api/v1/health | jq
 # {"status":"ok","store":"postgres","routing":{"mode":"auto","osrm_available":true},...}
 ```
 
+### Google Maps inteqrasiyası (istəyə bağlı)
+
+Açar verildikdə əsas xəritə **Google Maps** (gecə stili + peyk seçimi), marşrutlar isə **Google Directions (piyada)** olur. Açar yoxdursa və ya Google cavab vermirsə sistem **avtomatik** OpenStreetMap + OSRM-ə qayıdır.
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → *APIs & Services → Library* → **Maps JavaScript API** və **Directions API**-ni aktivləşdirin (billing hesabı tələb olunur; aylıq pulsuz limit var).
+2. *Credentials → Create credentials → API key*:
+   - **Brauzer açarı** — *Application restrictions: HTTP referrers* → `http://localhost:*/*`; *API restrictions:* Maps JavaScript API.
+   - **Server açarı** (Directions üçün) — referrer məhdudiyyəti **olmadan** (və ya IP), *API restrictions:* Directions API.
+3. Layihə kökündə `.env` faylı (gitignore-dadır):
+   ```
+   GOOGLE_MAPS_API_KEY=AIza...brauzer
+   GOOGLE_DIRECTIONS_API_KEY=AIza...server
+   ```
+4. `docker compose up --build -d` — dispeçer panelində *Sistem* kartı «Google Maps» və «Google Directions ✓» göstərməlidir.
+
 ## 4. Demo ssenarisi (3 dəqiqə)
 
 1. **Vətəndaş** (`/`): rayon seçin və ya xəritəyə klikləyin → mavi marşrut + alternativlər, doluluq faizləri.
@@ -174,7 +189,8 @@ Münsiflər tərəfindən final zamanı dəyişikliklər elan oluna bilər. Sist
 | **Yeni DB** (MySQL, SQLite, Mongo, Redis…) | `store.Store` interfeysi; business-logic DB-dən xəbərsizdir | `internal/store/<yeni>/` — 1 fayl, `main.go`-da 1 sətir |
 | **DB kəsintisi** | `STORE_FALLBACK` → in-memory ilə işləməyə davam edir; `/health` `degraded` göstərir | heç nə |
 | **Xarici API (OSRM) kəsintisi** | Circuit breaker (3 xəta → 60 s) + Dijkstra ilə daxili yol qrafı; cavabda `source:"simulated"` | heç nə — avtomatik |
-| **Yeni marşrut provayderi** (Google, Mapbox, GraphHopper) | `routing.Router` interfeysi, `Chain` içində növbəyə qoşulur | `internal/routing/<yeni>.go` |
+| **Yeni marşrut provayderi** (Google, Mapbox, GraphHopper) | `routing.Router` interfeysi, `Chain` içində növbəyə qoşulur — **Google Directions artıq qoşulub** (`internal/routing/google.go`, açar varsa birinci sırada) | `internal/routing/<yeni>.go` |
+| **Xəritə provayderinin dəyişməsi** | Base layer `makeMap()`-da tək yerdədir: Google Maps (açar varsa) → OpenStreetMap fallback; marker/marşrut kodu Leaflet-dir, dəyişmir | `web/static/common.js` |
 | **Yeni dil** | `internal/i18n/locales/<kod>.json` — UI və API mesajları avtomatik | 1 JSON fayl |
 | **Yeni SOS növü / status** | `domain` sabitləri + `Valid()` + locale açarı | 3 sətir |
 | **Alqoritm hədlərinin dəyişməsi** (məs. 3 SOS / 3 dəq / 300 m / 90 %) | Hamısı env dəyişənidir | `docker compose up` ilə yenidən başlat, kod dəyişmir |

@@ -46,6 +46,10 @@ func main() {
 	osrm := routing.NewOSRM(cfg.OSRMURL, cfg.OSRMProfile, cfg.OSRMTimeout)
 	osrm.SpeedMps = cfg.WalkingSpeedMps // evacuation is on foot: comparable durations across providers
 	router := routing.NewChain(cfg.RoutingMode, osrm, sim)
+	if cfg.GoogleDirectionsKey != "" {
+		router.Google = routing.NewGoogleDirections(cfg.GoogleDirectionsKey, cfg.OSRMTimeout)
+		log.Info("routing: Google Directions enabled (walking)")
+	}
 
 	hub := events.NewHub()
 	engine := crisis.New(crisis.Config{
@@ -56,7 +60,7 @@ func main() {
 
 	handler := api.New(api.Config{
 		DispatcherKey: cfg.DispatcherKey, RateLimitRPS: cfg.RateLimitRPS, RateLimitBurst: cfg.RateLimitBurst,
-		DefaultLang: cfg.DefaultLang, Version: version,
+		DefaultLang: cfg.DefaultLang, Version: version, GoogleMapsKey: cfg.GoogleMapsKey,
 	}, svc, hub, log)
 
 	srv := &http.Server{

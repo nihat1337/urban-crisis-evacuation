@@ -25,6 +25,7 @@ type Config struct {
 	RateLimitBurst int
 	DefaultLang    string
 	Version        string
+	GoogleMapsKey  string // browser (referrer-restricted) key; empty → OSM tiles
 }
 
 type Server struct {
@@ -48,6 +49,7 @@ func New(cfg Config, svc *service.Service, hub *events.Hub, log *slog.Logger) ht
 
 	// Module 1 — citizen (public)
 	mux.HandleFunc("GET /api/v1/health", s.health)
+	mux.HandleFunc("GET /api/v1/config", s.clientConfig)
 	mux.HandleFunc("GET /api/v1/i18n", s.languages)
 	mux.HandleFunc("GET /api/v1/i18n/{lang}", s.bundle)
 	mux.HandleFunc("GET /api/v1/zones", s.zones)
@@ -174,6 +176,23 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		"routing":   s.svc.RoutingStatus(),
 		"sse_subscribers": s.hub.Subscribers(),
 		"time":      time.Now().UTC(),
+	})
+}
+
+// clientConfig tells the web apps which map provider to use. The Google key
+// is a browser key restricted by HTTP referrer, so exposing it here is the
+// intended usage; without a key the apps render OpenStreetMap tiles.
+func (s *Server) clientConfig(w http.ResponseWriter, _ *http.Request) {
+	provider := "osm"
+	if s.cfg.GoogleMapsKey != "" {
+		provider = "google"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"map_provider":    provider,
+		"google_maps_key": s.cfg.GoogleMapsKey,
+		"routing":         s.svc.RoutingStatus(),
+		"default_lang":    s.cfg.DefaultLang,
+		"version":         s.cfg.Version,
 	})
 }
 

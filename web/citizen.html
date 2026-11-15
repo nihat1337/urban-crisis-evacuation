@@ -74,11 +74,10 @@
 <script src="/static/common.js"></script>
 <script>
 (async function () {
-  const map = makeMap('map');
+  await initI18n();
+  const map = await makeMap('map');
   const layers = { shelters: L.layerGroup().addTo(map), routes: L.layerGroup().addTo(map) };
   let origin = null, originMarker = null, zones = [], plan = null, fitted = false;
-
-  await initI18n();
 
   // Priority role (reduced mobility / special care): remembered per device,
   // sent with every SOS/status and switches the planner to accessible-only routing.
@@ -134,8 +133,8 @@
       $('#route-src').textContent = '♿ ' + t('accessible_route');
       $('#route-src').className = 'badge orange';
     } else {
-      $('#route-src').textContent = src === 'osrm' ? 'OSRM' : src === 'simulated' ? t('routing_simulated') : '';
-      $('#route-src').className = 'badge ' + (src === 'osrm' ? 'green' : 'yellow');
+      $('#route-src').textContent = src === 'google' ? 'Google Directions' : src === 'osrm' ? 'OSRM' : src === 'simulated' ? t('routing_simulated') : '';
+      $('#route-src').className = 'badge ' + (src === 'google' || src === 'osrm' ? 'green' : 'yellow');
     }
     if (plan.accessible) { const n = document.createElement('p'); n.className = 'hint'; n.textContent = '♿ ' + t('accessible_only'); list.appendChild(n); }
 
