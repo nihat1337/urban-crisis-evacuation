@@ -41,6 +41,7 @@
       <div class="row">
         <select id="sim-zone"></select>
         <button id="sim" class="btn danger small">🧪 <span data-i18n="simulate_cluster">4 SOS göndər (böhran testi)</span></button>
+        <button id="sim-prio" class="btn warn small">♿ <span data-i18n="priority_sos">Prioritet SOS</span></button>
       </div>
       <p class="hint" data-i18n="simulate_hint"></p>
       <p class="hint" data-i18n="click_road_hint"></p>
@@ -131,7 +132,8 @@
     ov.zones.forEach(z => {
       const tr = document.createElement('tr');
       const hot = z.recent_sos >= (ov.crisis.min_signals || 4);
-      tr.innerHTML = `<td>${hot ? '🔴 ' : ''}${esc(z.name)}</td><td class="num">${z.open_sos}</td><td class="num">${z.recent_sos}</td><td class="num" style="color:${pctColor(z.avg_occupancy_pct)}">${z.avg_occupancy_pct}%</td>`;
+      const crit = z.critical_sos ? ` <span class="badge red" title="${esc(t('priority_critical'))}">♿ ${z.critical_sos}</span>` : '';
+      tr.innerHTML = `<td>${hot ? '🔴 ' : ''}${esc(z.name)}</td><td class="num">${z.open_sos}${crit}</td><td class="num">${z.recent_sos}</td><td class="num" style="color:${pctColor(z.avg_occupancy_pct)}">${z.avg_occupancy_pct}%</td>`;
       tr.style.cursor = 'pointer'; tr.onclick = () => map.setView([z.center.lat, z.center.lng], 14);
       tb.appendChild(tr);
     });
@@ -143,7 +145,8 @@
     ov.shelters.forEach(sh => {
       const pct = sh.capacity ? Math.round(sh.occupancy / sh.capacity * 1000) / 10 : 100, col = pctColor(pct);
       const el = document.createElement('div'); el.className = 'item';
-      el.innerHTML = `<div class="title"><span>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)}</span><span class="badge" style="color:${col}">${pct}%</span></div>
+      const acc = sh.accessible ? `<span class="badge green" title="${esc(t('accessible'))}">♿</span>` : `<span class="badge" title="${esc(t('not_accessible'))}">🚫♿</span>`;
+      el.innerHTML = `<div class="title"><span>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)} ${acc}</span><span class="badge" style="color:${col}">${pct}%</span></div>
         <div class="meta"><span>${esc(zoneName(sh.zone_id))}</span><span>${sh.occupancy} / ${sh.capacity}</span>${sh.active ? '' : '<span class="badge red">off</span>'}</div>
         <input type="range" min="0" max="${sh.capacity}" value="${sh.occupancy}" data-shelter="${sh.id}" title="${esc(t('set_occupancy'))}">
         <div class="bar"><div style="width:${Math.min(100, pct)}%;background:${col}"></div></div>`;
@@ -178,8 +181,10 @@
     $('#sos-count').textContent = openSOS.length;
     const so = $('#sos'); so.innerHTML = '';
     ov.sos.slice(0, 40).forEach(s => {
-      const el = document.createElement('div'); el.className = 'item'; if (s.status === 'resolved') el.style.opacity = .5;
-      el.innerHTML = `<div class="title"><span>${SOS_ICON[s.type] || '🆘'} ${esc(t('sos_' + s.type))} <span class="badge">${esc(s.status)}</span></span>
+      const critical = s.priority === 1;
+      const el = document.createElement('div'); el.className = 'item' + (critical && s.status !== 'resolved' ? ' critical' : ''); if (s.status === 'resolved') el.style.opacity = .5;
+      const prioBadge = critical ? `<span class="badge red">♿ ${esc(t('priority_critical'))}</span>` : '';
+      el.innerHTML = `<div class="title"><span>${SOS_ICON[s.type] || '🆘'} ${esc(t('sos_' + s.type))} ${prioBadge} <span class="badge">${esc(s.status)}</span></span>
         ${s.status !== 'resolved' ? `<button class="btn small ok" data-resolve="${s.id}">✓ ${esc(t('resolve'))}</button>` : ''}</div>
         <div class="meta"><span>${esc(zoneName(s.zone_id))}</span><span>${timeAgo(s.created_at)}</span><span>${esc(s.citizen_id)}</span>${s.brigade_id ? `<span>🚒 ${esc(s.brigade_id)}</span>` : ''}</div>`;
       el.onclick = (e) => { if (!e.target.dataset.resolve) map.setView([s.location.lat, s.location.lng], 15); };
@@ -202,8 +207,9 @@
     // --- map
     Object.values(layers).forEach(l => l.clearLayers());
     ov.roads.forEach(r => {
-      const line = L.polyline([[r.from.lat, r.from.lng], [r.to.lat, r.to.lng]], { color: ROAD_COLOR[r.status], weight: r.status === 'blocked' ? 6 : 4, opacity: .8, dashArray: r.status === 'blocked' ? '8 8' : null });
-      line.bindTooltip(`${esc(r.name)} — ${esc(t('road_' + r.status))}`);
+      const dash = r.status === 'blocked' ? '8 8' : (r.accessible ? null : '2 7'); // dotted = stairs / barrier
+      const line = L.polyline([[r.from.lat, r.from.lng], [r.to.lat, r.to.lng]], { color: ROAD_COLOR[r.status], weight: r.status === 'blocked' ? 6 : 4, opacity: .8, dashArray: dash });
+      line.bindTooltip(`${esc(r.name)} — ${esc(t('road_' + r.status))} · ${r.accessible ? '♿ ' + esc(t('accessible')) : '🚫♿ ' + esc(t('not_accessible'))}`);
       line.on('click', async () => {
         try { await api(`/dispatch/roads/${r.id}`, { method: 'PATCH', body: { status: NEXT_ROAD[r.status] } }); load(); } catch (e) { toast(e.message, 'error'); }
       });
@@ -215,8 +221,10 @@
         .bindPopup(`<b>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)}</b><br>${pct.toFixed(1)}% (${sh.occupancy}/${sh.capacity})`).addTo(layers.shelters);
     });
     ov.sos.filter(s => s.status !== 'resolved').forEach(s => {
-      L.marker([s.location.lat, s.location.lng], { icon: L.divIcon({ className: '', html: `<div class="brigade-icon">${SOS_ICON[s.type] || '🆘'}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
-        .bindPopup(`<b>${esc(t('sos_' + s.type))}</b><br>${esc(s.citizen_id)} · ${timeAgo(s.created_at)}<br>${esc(s.status)}`).addTo(layers.sos);
+      const critical = s.priority === 1;
+      if (critical) L.circle([s.location.lat, s.location.lng], { radius: 120, color: '#ef4444', fillColor: '#ef4444', fillOpacity: .25, weight: 2 }).addTo(layers.sos);
+      L.marker([s.location.lat, s.location.lng], { icon: L.divIcon({ className: '', html: `<div class="brigade-icon">${critical ? '♿' : (SOS_ICON[s.type] || '🆘')}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
+        .bindPopup(`<b>${critical ? '♿ ' + esc(t('priority_critical')) + '<br>' : ''}${esc(t('sos_' + s.type))}</b><br>${esc(s.citizen_id)} · ${timeAgo(s.created_at)}<br>${esc(s.status)}`).addTo(layers.sos);
     });
     ov.brigades.forEach(b => {
       L.marker([b.location.lat, b.location.lng], { icon: L.divIcon({ className: '', html: '<div class="brigade-icon">🚒</div>', iconSize: [24, 24], iconAnchor: [12, 12] }) })
@@ -242,9 +250,20 @@
     load();
   };
 
+  // one priority SOS from a reduced-mobility citizen in the chosen zone
+  $('#sim-prio').onclick = async () => {
+    const z = ov?.zones.find(x => x.id === $('#sim-zone').value); if (!z) return;
+    try {
+      await api('/sos', { method: 'POST', body: { citizen_id: 'wheelchair-' + Math.random().toString(36).slice(2, 7), role: 'priority', type: 'medical',
+        lat: z.center.lat + (Math.random() - .5) * 0.003, lng: z.center.lng + (Math.random() - .5) * 0.003 } });
+      load();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+
   connectSSE(ev => {
     if (ev.type === 'alert.created') toast(`🔴 ${ev.data.message}`, 'error', 9000);
-    else if (ev.type === 'sos.created') toast(`${SOS_ICON[ev.data.type] || '🆘'} SOS · ${zoneName(ev.data.zone_id)}`, 'warn', 3000);
+    else if (ev.type === 'sos.priority') toast(`♿ ${t('priority_critical')} · ${t('sos_' + ev.data.type)} · ${zoneName(ev.data.zone_id)}`, 'error', 9000);
+    else if (ev.type === 'sos.created' && ev.data.priority !== 1) toast(`${SOS_ICON[ev.data.type] || '🆘'} SOS · ${zoneName(ev.data.zone_id)}`, 'warn', 3000);
     reload();
   }, setLive);
 

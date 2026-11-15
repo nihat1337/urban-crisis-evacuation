@@ -175,3 +175,53 @@ func TestShelterFullCreatesAlertAndRoadBlockReroutes(t *testing.T) {
 		t.Fatalf("route should be marked as detour after a road block: %v", route)
 	}
 }
+
+func TestPrioritySOSAndAccessiblePlan(t *testing.T) {
+	srv := newTestServer(t)
+
+	// A reduced-mobility citizen's SOS is escalated to critical priority (#1).
+	resp, out := do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{
+		"citizen_id": "wheelchair-1", "role": "priority", "type": "medical", "lat": 40.3870, "lng": 49.8300,
+	}, "")
+	if resp.StatusCode != 201 {
+		t.Fatalf("priority sos: %d %v", resp.StatusCode, out)
+	}
+	sos := out["sos"].(map[string]any)
+	if sos["priority"] != float64(1) || sos["role"] != "priority" {
+		t.Fatalf("expected priority 1 / role priority, got %v", sos)
+	}
+	// A normal citizen stays at priority 2.
+	_, out = do(t, "POST", srv.URL+"/api/v1/sos", map[string]any{"citizen_id": "walker-1", "type": "fire", "lat": 40.3870, "lng": 49.8300}, "")
+	if out["sos"].(map[string]any)["priority"] != float64(2) {
+		t.Fatalf("expected priority 2, got %v", out["sos"])
+	}
+	// Dispatcher list: critical first.
+	_, out = do(t, "GET", srv.URL+"/api/v1/dispatch/sos", nil, testKey)
+	list := out["sos"].([]any)
+	if list[0].(map[string]any)["citizen_id"] != "wheelchair-1" {
+		t.Fatalf("critical SOS must be listed first: %v", list[0])
+	}
+
+	// Accessible plan: no bunkers (stairs), route over accessible roads only.
+	resp, out = do(t, "GET", srv.URL+"/api/v1/evacuation/plan?lat=40.3870&lng=49.8300&role=priority", nil, "")
+	if resp.StatusCode != 200 || out["accessible"] != true {
+		t.Fatalf("accessible plan: %d %v", resp.StatusCode, out)
+	}
+	all := []any{out["recommended"]}
+	all = append(all, out["alternatives"].([]any)...)
+	for _, o := range all {
+		opt := o.(map[string]any)
+		sh := opt["shelter"].(map[string]any)
+		if sh["accessible"] != true || sh["type"] == "shelter" {
+			t.Fatalf("non-accessible shelter offered to a priority citizen: %v", sh["name"])
+		}
+		if route, ok := opt["route"].(map[string]any); ok && route["accessible"] != true {
+			t.Fatalf("route is not flagged accessible: %v", route)
+		}
+	}
+	// The default plan from the same spot does offer the (non-accessible) bunker.
+	_, out = do(t, "GET", srv.URL+"/api/v1/evacuation/plan?lat=40.3870&lng=49.8300", nil, "")
+	if out["accessible"] != false {
+		t.Fatalf("default plan must not be accessible-restricted: %v", out["accessible"])
+	}
+}

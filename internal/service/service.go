@@ -131,8 +131,9 @@ func (s *Service) resolveOrigin(ctx context.Context, origin *domain.Point, zoneI
 	return *origin, zoneID, nil
 }
 
-// NearestShelters lists active shelters by distance from the origin.
-func (s *Service) NearestShelters(ctx context.Context, origin *domain.Point, zoneID string, limit int) ([]domain.ShelterOption, error) {
+// NearestShelters lists active shelters by distance from the origin. With
+// accessible=true only barrier-free shelters (ramps, no stairs) are returned.
+func (s *Service) NearestShelters(ctx context.Context, origin *domain.Point, zoneID string, limit int, accessible bool) ([]domain.ShelterOption, error) {
 	o, _, err := s.resolveOrigin(ctx, origin, zoneID)
 	if err != nil {
 		return nil, err
@@ -143,7 +144,7 @@ func (s *Service) NearestShelters(ctx context.Context, origin *domain.Point, zon
 	}
 	opts := make([]domain.ShelterOption, 0, len(shelters))
 	for _, sh := range shelters {
-		if !sh.Active {
+		if !sh.Active || (accessible && !sh.Accessible) {
 			continue
 		}
 		opts = append(opts, domain.ShelterOption{
@@ -166,21 +167,31 @@ func (s *Service) NearestShelters(ctx context.Context, origin *domain.Point, zon
 }
 
 // Plan builds the evacuation plan: routes to the nearest non-full shelters are
-// computed concurrently and the fastest one is recommended.
-func (s *Service) Plan(ctx context.Context, origin *domain.Point, zoneID string) (domain.EvacuationPlan, error) {
+// computed concurrently and the fastest one is recommended. With
+// accessible=true (priority citizens) only accessible shelters are considered
+// and routes run exclusively over barrier-free roads.
+func (s *Service) Plan(ctx context.Context, origin *domain.Point, zoneID string, accessible bool) (domain.EvacuationPlan, error) {
 	o, zid, err := s.resolveOrigin(ctx, origin, zoneID)
 	if err != nil {
 		return domain.EvacuationPlan{}, err
 	}
-	opts, err := s.NearestShelters(ctx, &o, zid, 0)
+	opts, err := s.NearestShelters(ctx, &o, zid, 0, accessible)
 	if err != nil {
 		return domain.EvacuationPlan{}, err
+	}
+	plan := domain.EvacuationPlan{Origin: o, ZoneID: zid, Accessible: accessible, GeneratedAt: time.Now().UTC()}
+	if accessible && len(opts) == 0 {
+		// Never leave a priority citizen without guidance: fall back to all shelters but say so.
+		plan.Warnings = append(plan.Warnings, "no_accessible_shelter")
+		if opts, err = s.NearestShelters(ctx, &o, zid, 0, false); err != nil {
+			return domain.EvacuationPlan{}, err
+		}
 	}
 	roads, err := s.store.ListRoads(ctx)
 	if err != nil {
 		return domain.EvacuationPlan{}, err
 	}
-	plan := domain.EvacuationPlan{Origin: o, ZoneID: zid, GeneratedAt: time.Now().UTC()}
+	routeOpts := routing.Options{Accessible: accessible}
 
 	var usable []domain.ShelterOption
 	for _, op := range opts {
@@ -206,7 +217,7 @@ func (s *Service) Plan(ctx context.Context, origin *domain.Point, zoneID string)
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			r, err := s.router.Route(ctx, o, cands[i].Shelter.Location, roads)
+			r, err := s.router.Route(ctx, o, cands[i].Shelter.Location, roads, routeOpts)
 			if err != nil {
 				s.log.Warn("route failed", "shelter", cands[i].Shelter.ID, "err", err)
 				return
@@ -234,25 +245,41 @@ func (s *Service) Plan(ctx context.Context, origin *domain.Point, zoneID string)
 	if plan.Recommended.Route != nil && plan.Recommended.Route.Detour {
 		plan.Warnings = append(plan.Warnings, "detour")
 	}
-	if plan.Recommended.Route != nil && plan.Recommended.Route.Source != "osrm" {
+	if plan.Recommended.Route != nil && plan.Recommended.Route.Source != "osrm" && !accessible {
 		plan.Warnings = append(plan.Warnings, "routing_fallback")
+	}
+	if accessible && plan.Recommended.Route != nil && !plan.Recommended.Route.Accessible {
+		plan.Warnings = append(plan.Warnings, "accessible_route_unavailable")
 	}
 	return plan, nil
 }
 
 type SOSInput struct {
-	CitizenID string         `json:"citizen_id"`
-	Type      domain.SOSType `json:"type"`
-	Lat       *float64       `json:"lat"`
-	Lng       *float64       `json:"lng"`
-	ZoneID    string         `json:"zone_id"`
-	Message   string         `json:"message"`
+	CitizenID string             `json:"citizen_id"`
+	Role      domain.CitizenRole `json:"role"` // "priority" → critical priority + accessible routing
+	Type      domain.SOSType     `json:"type"`
+	Lat       *float64           `json:"lat"`
+	Lng       *float64           `json:"lng"`
+	ZoneID    string             `json:"zone_id"`
+	Message   string             `json:"message"`
 }
 
-// SubmitSOS stores the signal, marks the citizen as needing help, and runs the crisis engine.
+// SubmitSOS stores the signal, marks the citizen as needing help, and runs the
+// crisis engine. A signal from a priority-role citizen (reduced mobility /
+// special care) is automatically escalated to critical priority (#1).
 func (s *Service) SubmitSOS(ctx context.Context, in SOSInput) (domain.SOS, *domain.Alert, error) {
 	if !in.Type.Valid() {
 		return domain.SOS{}, nil, invalid("invalid_sos_type")
+	}
+	if in.Role == "" {
+		in.Role = domain.RoleStandard
+	}
+	if !in.Role.Valid() {
+		return domain.SOS{}, nil, invalid("invalid_role")
+	}
+	priority := domain.PriorityNormal
+	if in.Role == domain.RolePriority {
+		priority = domain.PriorityCritical
 	}
 	var origin *domain.Point
 	if in.Lat != nil && in.Lng != nil {
@@ -270,14 +297,18 @@ func (s *Service) SubmitSOS(ctx context.Context, in SOSInput) (domain.SOS, *doma
 	}
 	now := time.Now().UTC()
 	sos := domain.SOS{
-		ID: domain.NewID(), CitizenID: in.CitizenID, Type: in.Type, ZoneID: zid,
+		ID: domain.NewID(), CitizenID: in.CitizenID, Role: in.Role, Priority: priority, Type: in.Type, ZoneID: zid,
 		Location: o, Message: in.Message, Status: domain.SOSOpen, CreatedAt: now,
 	}
 	if err := s.store.CreateSOS(ctx, sos); err != nil {
 		return domain.SOS{}, nil, err
 	}
-	_ = s.store.UpsertCitizen(ctx, domain.Citizen{ID: in.CitizenID, Status: domain.CitizenNeedHelp, Location: &o, UpdatedAt: now})
+	_ = s.store.UpsertCitizen(ctx, domain.Citizen{ID: in.CitizenID, Role: in.Role, Status: domain.CitizenNeedHelp, Location: &o, UpdatedAt: now})
 	s.hub.Publish("sos.created", sos)
+	if priority == domain.PriorityCritical {
+		s.log.Warn("PRIORITY SOS", "id", sos.ID, "zone", sos.ZoneID, "type", sos.Type)
+		s.hub.Publish("sos.priority", sos)
+	}
 
 	alert, err := s.engine.OnSOS(ctx, sos)
 	if err != nil {
@@ -291,14 +322,20 @@ func (s *Service) SubmitSOS(ctx context.Context, in SOSInput) (domain.SOS, *doma
 	return sos, alert, nil
 }
 
-func (s *Service) UpdateCitizenStatus(ctx context.Context, id string, status domain.CitizenStatus, loc *domain.Point) (domain.Citizen, error) {
+func (s *Service) UpdateCitizenStatus(ctx context.Context, id string, status domain.CitizenStatus, role domain.CitizenRole, loc *domain.Point) (domain.Citizen, error) {
 	if !status.Valid() {
 		return domain.Citizen{}, invalid("invalid_status")
 	}
 	if id == "" {
 		return domain.Citizen{}, invalid("invalid_json")
 	}
-	c := domain.Citizen{ID: id, Status: status, Location: loc, UpdatedAt: time.Now().UTC()}
+	if role == "" {
+		role = domain.RoleStandard
+	}
+	if !role.Valid() {
+		return domain.Citizen{}, invalid("invalid_role")
+	}
+	c := domain.Citizen{ID: id, Role: role, Status: status, Location: loc, UpdatedAt: time.Now().UTC()}
 	if err := s.store.UpsertCitizen(ctx, c); err != nil {
 		return domain.Citizen{}, err
 	}
@@ -413,7 +450,8 @@ func (s *Service) ExecuteAlert(ctx context.Context, id string, action domain.Ale
 		best.Status = domain.BrigadeEnRoute
 		best.ZoneID = a.ZoneID
 		best.UpdatedAt = now
-		// Attach the brigade to the most recent open SOS in the zone, if any.
+		// Attach the brigade to the most urgent open SOS in the zone: the store
+		// returns critical-priority (#1) signals first, then newest first.
 		if list, err := s.store.ListSOS(ctx, time.Time{}); err == nil {
 			for i := range list {
 				if list[i].ZoneID == a.ZoneID && list[i].Status == domain.SOSOpen {
@@ -533,6 +571,7 @@ func (s *Service) ListSOS(ctx context.Context, since time.Duration) ([]domain.SO
 type ZoneStat struct {
 	domain.Zone
 	OpenSOS         int     `json:"open_sos"`
+	CriticalSOS     int     `json:"critical_sos"`
 	RecentSOS       int     `json:"recent_sos"`
 	Shelters        int     `json:"shelters"`
 	AvgOccupancyPct float64 `json:"avg_occupancy_pct"`
@@ -611,6 +650,9 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 			}
 			if v.Status != domain.SOSResolved {
 				st.OpenSOS++
+				if v.Priority == domain.PriorityCritical {
+					st.CriticalSOS++
+				}
 			}
 			if now.Sub(v.CreatedAt) <= window {
 				st.RecentSOS++

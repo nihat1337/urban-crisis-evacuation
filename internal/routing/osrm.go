@@ -82,7 +82,7 @@ type osrmResponse struct {
 
 // Route ignores roads: OSRM only knows the real street network. Closures are
 // handled by the Chain router which decides when to bypass OSRM.
-func (o *OSRM) Route(ctx context.Context, from, to domain.Point, _ []domain.Road) (domain.Route, error) {
+func (o *OSRM) Route(ctx context.Context, from, to domain.Point, _ []domain.Road, _ Options) (domain.Route, error) {
 	if ok, _ := o.Healthy(); !ok {
 		return domain.Route{}, fmt.Errorf("%w: circuit breaker open", ErrUnavailable)
 	}

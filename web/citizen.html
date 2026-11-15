@@ -32,6 +32,14 @@
       <p class="hint" data-i18n="click_map_hint">Yerinizi seçmək üçün xəritəyə klikləyin və ya rayon seçin</p>
     </section>
 
+    <section class="card" id="priority-card">
+      <label class="row" style="cursor:pointer;gap:10px;align-items:flex-start">
+        <input type="checkbox" id="priority" style="width:20px;height:20px;margin-top:2px;accent-color:var(--orange);flex:none">
+        <span>♿ <b data-i18n="priority_mode">Hərəkət məhdudiyyəti / xüsusi qayğı</b></span>
+      </label>
+      <p class="hint" data-i18n="priority_mode_hint"></p>
+    </section>
+
     <section class="card">
       <h3 data-i18n="status_title">Təhlükəsizlik statusum</h3>
       <div class="status-grid">
@@ -72,6 +80,15 @@
 
   await initI18n();
 
+  // Priority role (reduced mobility / special care): remembered per device,
+  // sent with every SOS/status and switches the planner to accessible-only routing.
+  const prio = $('#priority');
+  prio.checked = localStorage.getItem('priorityRole') === '1';
+  const role = () => prio.checked ? 'priority' : 'standard';
+  const paintPriority = () => $('#priority-card').style.borderColor = prio.checked ? 'var(--orange)' : '';
+  paintPriority();
+  prio.onchange = () => { localStorage.setItem('priorityRole', prio.checked ? '1' : '0'); paintPriority(); fitted = false; refresh(); };
+
   // zones → district select
   try {
     zones = (await api('/zones')).zones;
@@ -101,7 +118,8 @@
   const refresh = debounce(async () => {
     if (!origin) return;
     try {
-      plan = await api(`/evacuation/plan?lat=${origin.lat}&lng=${origin.lng}`);
+      plan = await api(`/evacuation/plan?lat=${origin.lat}&lng=${origin.lng}&role=${role()}`);
+      if (plan.warnings?.includes('no_accessible_shelter')) toast(t('no_accessible_shelter'), 'warn', 7000);
       render();
     } catch (e) { toast(e.message, 'error'); }
   }, 150);
@@ -112,8 +130,14 @@
     if (!plan || !plan.recommended) { list.innerHTML = `<p class="hint">${esc(t('full'))}</p>`; return; }
     const all = [plan.recommended, ...(plan.alternatives || [])];
     const src = plan.recommended.route?.source;
-    $('#route-src').textContent = src === 'osrm' ? 'OSRM' : src === 'simulated' ? t('routing_simulated') : '';
-    $('#route-src').className = 'badge ' + (src === 'osrm' ? 'green' : 'yellow');
+    if (plan.accessible) {
+      $('#route-src').textContent = '♿ ' + t('accessible_route');
+      $('#route-src').className = 'badge orange';
+    } else {
+      $('#route-src').textContent = src === 'osrm' ? 'OSRM' : src === 'simulated' ? t('routing_simulated') : '';
+      $('#route-src').className = 'badge ' + (src === 'osrm' ? 'green' : 'yellow');
+    }
+    if (plan.accessible) { const n = document.createElement('p'); n.className = 'hint'; n.textContent = '♿ ' + t('accessible_only'); list.appendChild(n); }
 
     const bounds = [origin];
     all.forEach((o, i) => {
@@ -129,8 +153,9 @@
       const item = document.createElement('div');
       item.className = 'item' + (i === 0 ? ' recommended' : '');
       const detour = o.route?.detour ? `<span class="badge orange">⚠ ${esc(t('detour'))}</span>` : '';
+      const acc = sh.accessible ? `<span class="badge green" title="${esc(t('accessible'))}">♿</span>` : `<span class="badge" title="${esc(t('not_accessible'))}">🚫♿</span>`;
       item.innerHTML = `
-        <div class="title"><span>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)}</span>
+        <div class="title"><span>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)} ${acc}</span>
           <span class="badge ${i === 0 ? 'blue' : ''}">${esc(i === 0 ? t('recommended') : t('alternative'))}</span></div>
         <div class="meta">
           <span>📏 ${o.route ? fmtDist(o.route.distance_m) : fmtDist(o.distance_m)}</span>
@@ -150,8 +175,9 @@
     if (!origin) return toast(t('no_location'), 'warn');
     btn.disabled = true;
     try {
-      const r = await api('/sos', { method: 'POST', body: { citizen_id: citizenId(), type: btn.dataset.sos, lat: origin.lat, lng: origin.lng } });
-      toast(`${SOS_ICON[btn.dataset.sos]} ${t('sos_sent')} · #${r.sos.id}`, 'ok');
+      const r = await api('/sos', { method: 'POST', body: { citizen_id: citizenId(), role: role(), type: btn.dataset.sos, lat: origin.lat, lng: origin.lng } });
+      if (r.sos.priority === 1) toast(`♿ ${t('priority_critical')} — ${t('sos_priority_sent')} · #${r.sos.id}`, 'warn', 8000);
+      else toast(`${SOS_ICON[btn.dataset.sos]} ${t('sos_sent')} · #${r.sos.id}`, 'ok');
       L.circleMarker(origin, { radius: 14, color: '#ef4444', fillOpacity: .3 }).addTo(layers.routes);
     } catch (e) { toast(e.message, 'error'); } finally { btn.disabled = false; }
   });
@@ -159,7 +185,7 @@
   // status
   $$('[data-status]').forEach(btn => btn.onclick = async () => {
     try {
-      await api(`/citizens/${citizenId()}/status`, { method: 'POST', body: { status: btn.dataset.status, ...(origin || {}) } });
+      await api(`/citizens/${citizenId()}/status`, { method: 'POST', body: { status: btn.dataset.status, role: role(), ...(origin || {}) } });
       $$('[data-status]').forEach(b => b.classList.remove('active')); btn.classList.add('active');
       toast(t('status_saved'), 'ok');
     } catch (e) { toast(e.message, 'error'); }

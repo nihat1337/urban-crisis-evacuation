@@ -54,6 +54,8 @@ type Shelter struct {
 	Capacity  int         `json:"capacity"`
 	Occupancy int         `json:"occupancy"`
 	Active    bool        `json:"active"`
+	// Accessible: reachable by wheelchair / medical transport (ramps, no stairs).
+	Accessible bool `json:"accessible"`
 }
 
 // OccupancyPct returns occupancy as a percentage rounded to one decimal.
@@ -89,11 +91,31 @@ const (
 	SOSResolved SOSStatus = "resolved"
 )
 
+// CitizenRole distinguishes citizens who need special care (hərəkət
+// məhdudiyyəti / xüsusi qayğı). Their SOS is critical priority and their
+// evacuation routes must be barrier-free.
+type CitizenRole string
+
+const (
+	RoleStandard CitizenRole = "standard"
+	RolePriority CitizenRole = "priority"
+)
+
+func (r CitizenRole) Valid() bool { return r == RoleStandard || r == RolePriority }
+
+// SOS priority: 1 = critical (priority role), 2 = normal.
+const (
+	PriorityCritical = 1
+	PriorityNormal   = 2
+)
+
 // SOS is a single distress signal sent by a citizen.
 type SOS struct {
-	ID        string    `json:"id"`
-	CitizenID string    `json:"citizen_id"`
-	Type      SOSType   `json:"type"`
+	ID        string      `json:"id"`
+	CitizenID string      `json:"citizen_id"`
+	Role      CitizenRole `json:"role"`
+	Priority  int         `json:"priority"`
+	Type      SOSType     `json:"type"`
 	ZoneID    string    `json:"zone_id"`
 	Location  Point     `json:"location"`
 	Message   string    `json:"message,omitempty"`
@@ -121,6 +143,7 @@ func (s CitizenStatus) Valid() bool {
 // Citizen tracks the self-reported safety status of one device/user.
 type Citizen struct {
 	ID        string        `json:"id"`
+	Role      CitizenRole   `json:"role"`
 	Status    CitizenStatus `json:"status"`
 	Location  *Point        `json:"location,omitempty"`
 	UpdatedAt time.Time     `json:"updated_at"`
@@ -176,7 +199,9 @@ type Road struct {
 	From      Point      `json:"from"`
 	To        Point      `json:"to"`
 	Status    RoadStatus `json:"status"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	// Accessible: has ramps / no stairs or barriers — usable by wheelchairs and medical transport.
+	Accessible bool      `json:"accessible"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type AlertLevel string
@@ -227,7 +252,8 @@ type Route struct {
 	DistanceM float64 `json:"distance_m"`
 	DurationS float64 `json:"duration_s"`
 	Geometry  []Point `json:"geometry"`
-	Detour    bool    `json:"detour"` // true when a blocked road forced an alternative
+	Detour    bool    `json:"detour"`     // true when a blocked road forced an alternative
+	Accessible bool   `json:"accessible"` // true when computed over barrier-free roads only
 	Notes     string  `json:"notes,omitempty"`
 }
 
@@ -244,6 +270,7 @@ type ShelterOption struct {
 type EvacuationPlan struct {
 	Origin       Point           `json:"origin"`
 	ZoneID       string          `json:"zone_id"`
+	Accessible   bool            `json:"accessible"` // plan restricted to accessible shelters & roads
 	Recommended  *ShelterOption  `json:"recommended"`
 	Alternatives []ShelterOption `json:"alternatives"`
 	Warnings     []string        `json:"warnings,omitempty"`

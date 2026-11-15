@@ -57,24 +57,33 @@ func (c *Chain) corridorBlocked(from, to domain.Point, roads []domain.Road) (boo
 	return false, ""
 }
 
-func (c *Chain) Route(ctx context.Context, from, to domain.Point, roads []domain.Road) (domain.Route, error) {
+func (c *Chain) Route(ctx context.Context, from, to domain.Point, roads []domain.Road, opts Options) (domain.Route, error) {
+	// Accessible routes always come from the curated graph: the public OSRM API
+	// knows nothing about ramps, stairs or barriers.
+	if opts.Accessible {
+		r, err := c.Sim.Route(ctx, from, to, roads, opts)
+		if err == nil && r.Source == "simulated" && r.Notes == "" {
+			r.Notes = "♿ yalnız panduslu və maneəsiz yollar"
+		}
+		return r, err
+	}
 	if c.Mode == "simulated" || c.OSRM == nil {
-		return c.Sim.Route(ctx, from, to, roads)
+		return c.Sim.Route(ctx, from, to, roads, opts)
 	}
 	if blocked, name := c.corridorBlocked(from, to, roads); blocked {
-		r, err := c.Sim.Route(ctx, from, to, roads)
+		r, err := c.Sim.Route(ctx, from, to, roads, opts)
 		r.Detour = true
 		r.Notes = fmt.Sprintf("%s bağlıdır — alternativ marşrut", name)
 		return r, err
 	}
-	r, err := c.OSRM.Route(ctx, from, to, roads)
+	r, err := c.OSRM.Route(ctx, from, to, roads, opts)
 	if err == nil {
 		return r, nil
 	}
 	if c.Mode == "osrm" {
 		return domain.Route{}, err
 	}
-	fb, ferr := c.Sim.Route(ctx, from, to, roads)
+	fb, ferr := c.Sim.Route(ctx, from, to, roads, opts)
 	if ferr != nil {
 		return domain.Route{}, ferr
 	}

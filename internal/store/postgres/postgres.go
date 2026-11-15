@@ -93,6 +93,14 @@ CREATE TABLE IF NOT EXISTS alerts (
 	executed boolean NOT NULL, executed_action text NOT NULL DEFAULT '',
 	created_at timestamptz NOT NULL, executed_at timestamptz
 );
+-- Priority SOS / accessibility module (announced at the final): idempotent
+-- upgrades so an existing database keeps working after the change.
+ALTER TABLE shelters ADD COLUMN IF NOT EXISTS accessible boolean NOT NULL DEFAULT true;
+ALTER TABLE roads    ADD COLUMN IF NOT EXISTS accessible boolean NOT NULL DEFAULT true;
+ALTER TABLE citizens ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'standard';
+ALTER TABLE sos      ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'standard';
+ALTER TABLE sos      ADD COLUMN IF NOT EXISTS priority int NOT NULL DEFAULT 2;
+CREATE INDEX IF NOT EXISTS sos_priority_idx ON sos (priority, created_at DESC);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -137,11 +145,11 @@ func (s *Store) UpsertZone(ctx context.Context, z domain.Zone) error {
 
 // --- shelters ---
 
-const shelterCols = `id, name, type, zone_id, lat, lng, capacity, occupancy, active`
+const shelterCols = `id, name, type, zone_id, lat, lng, capacity, occupancy, active, accessible`
 
 func scanShelter(row pgx.Row) (domain.Shelter, error) {
 	var sh domain.Shelter
-	err := row.Scan(&sh.ID, &sh.Name, &sh.Type, &sh.ZoneID, &sh.Location.Lat, &sh.Location.Lng, &sh.Capacity, &sh.Occupancy, &sh.Active)
+	err := row.Scan(&sh.ID, &sh.Name, &sh.Type, &sh.ZoneID, &sh.Location.Lat, &sh.Location.Lng, &sh.Capacity, &sh.Occupancy, &sh.Active, &sh.Accessible)
 	return sh, err
 }
 
@@ -168,26 +176,33 @@ func (s *Store) GetShelter(ctx context.Context, id string) (domain.Shelter, erro
 }
 
 func (s *Store) UpsertShelter(ctx context.Context, sh domain.Shelter) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO shelters (`+shelterCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	_, err := s.pool.Exec(ctx, `INSERT INTO shelters (`+shelterCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, type=EXCLUDED.type, zone_id=EXCLUDED.zone_id,
-		lat=EXCLUDED.lat, lng=EXCLUDED.lng, capacity=EXCLUDED.capacity, occupancy=EXCLUDED.occupancy, active=EXCLUDED.active`,
-		sh.ID, sh.Name, sh.Type, sh.ZoneID, sh.Location.Lat, sh.Location.Lng, sh.Capacity, sh.Occupancy, sh.Active)
+		lat=EXCLUDED.lat, lng=EXCLUDED.lng, capacity=EXCLUDED.capacity, occupancy=EXCLUDED.occupancy, active=EXCLUDED.active,
+		accessible=EXCLUDED.accessible`,
+		sh.ID, sh.Name, sh.Type, sh.ZoneID, sh.Location.Lat, sh.Location.Lng, sh.Capacity, sh.Occupancy, sh.Active, sh.Accessible)
 	return err
 }
 
 // --- sos ---
 
-const sosCols = `id, citizen_id, type, zone_id, lat, lng, message, status, brigade_id, created_at`
+const sosCols = `id, citizen_id, type, zone_id, lat, lng, message, status, brigade_id, created_at, role, priority`
 
 func scanSOS(row pgx.Row) (domain.SOS, error) {
 	var v domain.SOS
-	err := row.Scan(&v.ID, &v.CitizenID, &v.Type, &v.ZoneID, &v.Location.Lat, &v.Location.Lng, &v.Message, &v.Status, &v.BrigadeID, &v.CreatedAt)
+	err := row.Scan(&v.ID, &v.CitizenID, &v.Type, &v.ZoneID, &v.Location.Lat, &v.Location.Lng, &v.Message, &v.Status, &v.BrigadeID, &v.CreatedAt, &v.Role, &v.Priority)
 	return v, err
 }
 
 func (s *Store) CreateSOS(ctx context.Context, v domain.SOS) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO sos (`+sosCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		v.ID, v.CitizenID, v.Type, v.ZoneID, v.Location.Lat, v.Location.Lng, v.Message, v.Status, v.BrigadeID, v.CreatedAt)
+	if v.Role == "" {
+		v.Role = domain.RoleStandard
+	}
+	if v.Priority == 0 {
+		v.Priority = domain.PriorityNormal
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO sos (`+sosCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		v.ID, v.CitizenID, v.Type, v.ZoneID, v.Location.Lat, v.Location.Lng, v.Message, v.Status, v.BrigadeID, v.CreatedAt, v.Role, v.Priority)
 	return err
 }
 
@@ -208,7 +223,7 @@ func (s *Store) GetSOS(ctx context.Context, id string) (domain.SOS, error) {
 }
 
 func (s *Store) ListSOS(ctx context.Context, since time.Time) ([]domain.SOS, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+sosCols+` FROM sos WHERE created_at >= $1 ORDER BY created_at DESC`, since)
+	rows, err := s.pool.Query(ctx, `SELECT `+sosCols+` FROM sos WHERE created_at >= $1 ORDER BY priority ASC, created_at DESC`, since)
 	if err != nil {
 		return nil, err
 	}
@@ -231,14 +246,17 @@ func (s *Store) UpsertCitizen(ctx context.Context, c domain.Citizen) error {
 	if c.Location != nil {
 		lat, lng = &c.Location.Lat, &c.Location.Lng
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO citizens (id, status, lat, lng, updated_at) VALUES ($1,$2,$3,$4,$5)
-		ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, lat=EXCLUDED.lat, lng=EXCLUDED.lng, updated_at=EXCLUDED.updated_at`,
-		c.ID, c.Status, lat, lng, c.UpdatedAt)
+	if c.Role == "" {
+		c.Role = domain.RoleStandard
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO citizens (id, status, lat, lng, updated_at, role) VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, lat=EXCLUDED.lat, lng=EXCLUDED.lng, updated_at=EXCLUDED.updated_at, role=EXCLUDED.role`,
+		c.ID, c.Status, lat, lng, c.UpdatedAt, c.Role)
 	return err
 }
 
 func (s *Store) ListCitizens(ctx context.Context) ([]domain.Citizen, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, status, lat, lng, updated_at FROM citizens ORDER BY updated_at DESC`)
+	rows, err := s.pool.Query(ctx, `SELECT id, status, lat, lng, updated_at, role FROM citizens ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +265,7 @@ func (s *Store) ListCitizens(ctx context.Context) ([]domain.Citizen, error) {
 	for rows.Next() {
 		var c domain.Citizen
 		var lat, lng *float64
-		if err := rows.Scan(&c.ID, &c.Status, &lat, &lng, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Status, &lat, &lng, &c.UpdatedAt, &c.Role); err != nil {
 			return nil, err
 		}
 		if lat != nil && lng != nil {
@@ -300,11 +318,11 @@ func (s *Store) UpsertBrigade(ctx context.Context, b domain.Brigade) error {
 
 // --- roads ---
 
-const roadCols = `id, name, from_lat, from_lng, to_lat, to_lng, status, updated_at`
+const roadCols = `id, name, from_lat, from_lng, to_lat, to_lng, status, updated_at, accessible`
 
 func scanRoad(row pgx.Row) (domain.Road, error) {
 	var r domain.Road
-	err := row.Scan(&r.ID, &r.Name, &r.From.Lat, &r.From.Lng, &r.To.Lat, &r.To.Lng, &r.Status, &r.UpdatedAt)
+	err := row.Scan(&r.ID, &r.Name, &r.From.Lat, &r.From.Lng, &r.To.Lat, &r.To.Lng, &r.Status, &r.UpdatedAt, &r.Accessible)
 	return r, err
 }
 
@@ -331,10 +349,11 @@ func (s *Store) GetRoad(ctx context.Context, id string) (domain.Road, error) {
 }
 
 func (s *Store) UpsertRoad(ctx context.Context, r domain.Road) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO roads (`+roadCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	_, err := s.pool.Exec(ctx, `INSERT INTO roads (`+roadCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, from_lat=EXCLUDED.from_lat, from_lng=EXCLUDED.from_lng,
-		to_lat=EXCLUDED.to_lat, to_lng=EXCLUDED.to_lng, status=EXCLUDED.status, updated_at=EXCLUDED.updated_at`,
-		r.ID, r.Name, r.From.Lat, r.From.Lng, r.To.Lat, r.To.Lng, r.Status, r.UpdatedAt)
+		to_lat=EXCLUDED.to_lat, to_lng=EXCLUDED.to_lng, status=EXCLUDED.status, updated_at=EXCLUDED.updated_at,
+		accessible=EXCLUDED.accessible`,
+		r.ID, r.Name, r.From.Lat, r.From.Lng, r.To.Lat, r.To.Lng, r.Status, r.UpdatedAt, r.Accessible)
 	return err
 }
 

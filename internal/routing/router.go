@@ -14,10 +14,17 @@ import (
 
 var ErrUnavailable = errors.New("routing provider unavailable")
 
+// Options tunes a single route request.
+type Options struct {
+	// Accessible restricts the route to barrier-free roads (ramps, no stairs)
+	// for wheelchair users and medical transport.
+	Accessible bool
+}
+
 type Router interface {
 	Name() string
 	// Route computes a path from -> to taking the current road statuses into account.
-	Route(ctx context.Context, from, to domain.Point, roads []domain.Road) (domain.Route, error)
+	Route(ctx context.Context, from, to domain.Point, roads []domain.Road, opts Options) (domain.Route, error)
 }
 
 // Status is exposed on the health/overview endpoints.

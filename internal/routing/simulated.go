@@ -35,7 +35,7 @@ type edge struct {
 	dist float64 // real distance in metres
 }
 
-func (s *Simulated) Route(_ context.Context, from, to domain.Point, roads []domain.Road) (domain.Route, error) {
+func (s *Simulated) Route(_ context.Context, from, to domain.Point, roads []domain.Road, opts Options) (domain.Route, error) {
 	idx := map[string]int{}
 	var nodes []domain.Point
 	getNode := func(p domain.Point) int {
@@ -58,6 +58,9 @@ func (s *Simulated) Route(_ context.Context, from, to domain.Point, roads []doma
 		if r.Status == domain.RoadBlocked {
 			anyBlocked = true
 			continue
+		}
+		if opts.Accessible && !r.Accessible {
+			continue // stairs / barriers: unusable for wheelchairs and medical transport
 		}
 		a, b := getNode(r.From), getNode(r.To)
 		d := domain.DistanceM(r.From, r.To)
@@ -129,7 +132,11 @@ func (s *Simulated) Route(_ context.Context, from, to domain.Point, roads []doma
 		}
 	}
 	if dist[dst] == inf {
-		r := straightLine(from, to, s.SpeedMps, "qrafda əlaqə yoxdur; düz xətt")
+		note := "qrafda əlaqə yoxdur; düz xətt"
+		if opts.Accessible {
+			note = "əlçatan (panduslu) yol tapılmadı; düz xətt"
+		}
+		r := straightLine(from, to, s.SpeedMps, note)
 		r.Detour = anyBlocked
 		return r, nil
 	}
@@ -142,10 +149,11 @@ func (s *Simulated) Route(_ context.Context, from, to domain.Point, roads []doma
 	}
 	d := real[dst]
 	return domain.Route{
-		Source:    "simulated",
-		DistanceM: math.Round(d),
-		DurationS: math.Round(d / s.SpeedMps),
-		Geometry:  path,
-		Detour:    anyBlocked,
+		Source:     "simulated",
+		DistanceM:  math.Round(d),
+		DurationS:  math.Round(d / s.SpeedMps),
+		Geometry:   path,
+		Detour:     anyBlocked,
+		Accessible: opts.Accessible,
 	}, nil
 }

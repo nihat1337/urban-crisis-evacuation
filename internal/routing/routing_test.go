@@ -16,11 +16,11 @@ func p(lat, lng float64) domain.Point { return domain.Point{Lat: lat, Lng: lng} 
 func squareRoads() []domain.Road {
 	a, b, c, d := p(40.400, 49.800), p(40.400, 49.810), p(40.410, 49.810), p(40.410, 49.800)
 	return []domain.Road{
-		{ID: "ab", From: a, To: b, Status: domain.RoadOpen},
-		{ID: "bc", From: b, To: c, Status: domain.RoadOpen},
-		{ID: "cd", From: c, To: d, Status: domain.RoadOpen},
-		{ID: "da", From: d, To: a, Status: domain.RoadOpen},
-		{ID: "ac", From: a, To: c, Status: domain.RoadOpen},
+		{ID: "ab", From: a, To: b, Status: domain.RoadOpen, Accessible: true},
+		{ID: "bc", From: b, To: c, Status: domain.RoadOpen, Accessible: true},
+		{ID: "cd", From: c, To: d, Status: domain.RoadOpen, Accessible: true},
+		{ID: "da", From: d, To: a, Status: domain.RoadOpen, Accessible: true},
+		{ID: "ac", From: a, To: c, Status: domain.RoadOpen, Accessible: false},
 	}
 }
 
@@ -28,7 +28,7 @@ func TestSimulatedAvoidsBlockedRoad(t *testing.T) {
 	sim := NewSimulated(1.3)
 	a, c := p(40.400, 49.800), p(40.410, 49.810)
 
-	direct, err := sim.Route(context.Background(), a, c, squareRoads())
+	direct, err := sim.Route(context.Background(), a, c, squareRoads(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestSimulatedAvoidsBlockedRoad(t *testing.T) {
 
 	roads := squareRoads()
 	roads[4].Status = domain.RoadBlocked
-	detour, err := sim.Route(context.Background(), a, c, roads)
+	detour, err := sim.Route(context.Background(), a, c, roads, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestSimulatedAvoidsBlockedRoad(t *testing.T) {
 }
 
 func TestSimulatedEmptyGraphFallsBackToStraightLine(t *testing.T) {
-	r, err := NewSimulated(1.3).Route(context.Background(), p(40.4, 49.8), p(40.41, 49.81), nil)
+	r, err := NewSimulated(1.3).Route(context.Background(), p(40.4, 49.8), p(40.41, 49.81), nil, Options{})
 	if err != nil || r.Source != "straight" || len(r.Geometry) != 2 {
 		t.Fatalf("unexpected %+v %v", r, err)
 	}
@@ -71,7 +71,7 @@ func TestChainFallsBackWhenOSRMDown(t *testing.T) {
 	a, c := p(40.400, 49.800), p(40.410, 49.810)
 
 	for i := 0; i < 3; i++ {
-		r, err := ch.Route(context.Background(), a, c, squareRoads())
+		r, err := ch.Route(context.Background(), a, c, squareRoads(), Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestChainUsesOSRMWhenHealthy(t *testing.T) {
 	}))
 	defer srv.Close()
 	ch := NewChain("auto", NewOSRM(srv.URL, "driving", time.Second), NewSimulated(1.3))
-	r, err := ch.Route(context.Background(), p(40.4, 49.8), p(40.41, 49.81), squareRoads())
+	r, err := ch.Route(context.Background(), p(40.4, 49.8), p(40.41, 49.81), squareRoads(), Options{})
 	if err != nil || r.Source != "osrm" || r.DistanceM != 1500 || r.Geometry[0].Lat != 40.4 {
 		t.Fatalf("unexpected %+v %v", r, err)
 	}
@@ -108,7 +108,7 @@ func TestChainBypassesOSRMWhenCorridorBlocked(t *testing.T) {
 	ch := NewChain("auto", NewOSRM(srv.URL, "driving", time.Second), NewSimulated(1.3))
 	roads := squareRoads()
 	roads[4].Status = domain.RoadBlocked // diagonal, sits right on the corridor
-	r, err := ch.Route(context.Background(), p(40.400, 49.800), p(40.410, 49.810), roads)
+	r, err := ch.Route(context.Background(), p(40.400, 49.800), p(40.410, 49.810), roads, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,5 +117,25 @@ func TestChainBypassesOSRMWhenCorridorBlocked(t *testing.T) {
 	}
 	if !r.Detour || r.Source != "simulated" {
 		t.Fatalf("unexpected %+v", r)
+	}
+}
+
+func TestAccessibleRouteAvoidsNonAccessibleRoads(t *testing.T) {
+	ch := NewChain("auto", NewOSRM("http://127.0.0.1:1", "driving", time.Second), NewSimulated(1.3))
+	a, c := p(40.400, 49.800), p(40.410, 49.810)
+
+	normal, err := NewSimulated(1.3).Route(context.Background(), a, c, squareRoads(), Options{})
+	if err != nil || len(normal.Geometry) != 2 {
+		t.Fatalf("normal route should use the diagonal: %+v %v", normal, err)
+	}
+	acc, err := ch.Route(context.Background(), a, c, squareRoads(), Options{Accessible: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !acc.Accessible || acc.Source != "simulated" {
+		t.Fatalf("accessible route must come from the curated graph: %+v", acc)
+	}
+	if len(acc.Geometry) != 3 || acc.DistanceM <= normal.DistanceM {
+		t.Fatalf("accessible route must avoid the stairs diagonal: %+v", acc)
 	}
 }

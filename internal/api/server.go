@@ -123,6 +123,16 @@ func decode(r *http.Request, v any) error {
 	return nil
 }
 
+// queryAccessible is true for ?accessible=true|1 or ?role=priority.
+func queryAccessible(r *http.Request) bool {
+	q := r.URL.Query()
+	if q.Get("role") == string(domain.RolePriority) {
+		return true
+	}
+	v, _ := strconv.ParseBool(q.Get("accessible"))
+	return v
+}
+
 func queryPoint(r *http.Request) *domain.Point {
 	q := r.URL.Query()
 	lat, err1 := strconv.ParseFloat(q.Get("lat"), 64)
@@ -200,16 +210,17 @@ func (s *Server) roads(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) shelters(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	opts, err := s.svc.NearestShelters(r.Context(), queryPoint(r), r.URL.Query().Get("zone"), limit)
+	acc := queryAccessible(r)
+	opts, err := s.svc.NearestShelters(r.Context(), queryPoint(r), r.URL.Query().Get("zone"), limit, acc)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"shelters": opts})
+	writeJSON(w, http.StatusOK, map[string]any{"shelters": opts, "accessible": acc})
 }
 
 func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
-	plan, err := s.svc.Plan(r.Context(), queryPoint(r), r.URL.Query().Get("zone"))
+	plan, err := s.svc.Plan(r.Context(), queryPoint(r), r.URL.Query().Get("zone"), queryAccessible(r))
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -234,6 +245,7 @@ func (s *Server) createSOS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) citizenStatus(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Status domain.CitizenStatus `json:"status"`
+		Role   domain.CitizenRole   `json:"role"`
 		Lat    *float64             `json:"lat"`
 		Lng    *float64             `json:"lng"`
 	}
@@ -245,7 +257,7 @@ func (s *Server) citizenStatus(w http.ResponseWriter, r *http.Request) {
 	if in.Lat != nil && in.Lng != nil {
 		loc = &domain.Point{Lat: *in.Lat, Lng: *in.Lng}
 	}
-	c, err := s.svc.UpdateCitizenStatus(r.Context(), r.PathValue("id"), in.Status, loc)
+	c, err := s.svc.UpdateCitizenStatus(r.Context(), r.PathValue("id"), in.Status, in.Role, loc)
 	if err != nil {
 		s.fail(w, r, err)
 		return

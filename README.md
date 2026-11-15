@@ -40,6 +40,7 @@ Zəlzələ, güclü sel, sənaye qəzaları və ya kütləvi tədbirlər zamanı
 - **Bir kliklə SOS** — yanğın 🔥, dağıntı 🏚️, su basması 🌊, tibbi yardım 🚑.
 - Təhlükəsizlik statusu: *Təhlükəsizəm / Təxliyə edirəm / Köməyə ehtiyacım var*.
 - **Avtomatik alternativ marşrut**: yol bağlandıqda və ya məntəqə ≥ 90 % dolduqda server `route.invalidated` hadisəsi göndərir, vətəndaşın ekranı özü yenilənir.
+- **♿ Prioritet SOS (hərəkət məhdudiyyəti / xüsusi qayğı)**: rol aktiv olduqda SOS avtomatik **Kritik prioritet #1** alır və yalnız **panduslu, maneəsiz** (əlil arabası / tibbi nəqliyyat üçün əlçatan) məntəqə və marşrutlar təklif olunur — bax §7.1.
 
 ### Modul 2 — Dispeçer modulu & analitik mühərrik
 - Canlı panel: zonalar üzrə SOS sayı, məntəqələrin doluluğu, briqadaların statusu, yolların vəziyyəti — hamısı xəritədə.
@@ -108,9 +109,9 @@ Bütün cavablar JSON; xəta formatı `{"error":{"code":"...","message":"..."}}`
 | GET | `/api/v1/health` | Sistem statusu (store, routing, versiya) |
 | GET | `/api/v1/zones` | Rayonlar |
 | GET | `/api/v1/shelters?lat&lng` \| `?zone=nasimi` | Ən yaxın məntəqələr, doluluq %, tövsiyə |
-| GET | `/api/v1/evacuation/plan?lat&lng` \| `?zone=` | Tövsiyə olunan marşrut + alternativlər |
-| POST | `/api/v1/sos` | `{"citizen_id","type":"fire\|collapse\|flood\|medical","lat","lng","message"}` |
-| POST | `/api/v1/citizens/{id}/status` | `{"status":"safe\|evacuating\|need_help","lat","lng"}` |
+| GET | `/api/v1/evacuation/plan?lat&lng` \| `?zone=` [`&role=priority`] | Tövsiyə olunan marşrut + alternativlər; `role=priority` → yalnız ♿ əlçatan məntəqə/yollar |
+| POST | `/api/v1/sos` | `{"citizen_id","role":"standard\|priority","type":"fire\|collapse\|flood\|medical","lat","lng","message"}` — `priority` → `priority: 1` |
+| POST | `/api/v1/citizens/{id}/status` | `{"status":"safe\|evacuating\|need_help","role","lat","lng"}` |
 | GET | `/api/v1/roads` | Simulyasiya olunmuş yol/nəqliyyat endpointi |
 | GET | `/api/v1/events` | **SSE** canlı hadisələr |
 | GET | `/api/v1/i18n`, `/api/v1/i18n/{lang}` | Dillər və tərcümə lüğəti |
@@ -183,7 +184,12 @@ Münsiflər tərəfindən final zamanı dəyişikliklər elan oluna bilər. Sist
 
 ### 7.1 Elan edilmiş dəyişikliklər və tətbiqi
 
-> ⏳ **Hələ elan edilməyib.** Münsiflər dəyişikliyi elan edən kimi bu bölmə doldurulacaq: *nə tələb olundu → nə dəyişdirildi (fayl/commit) → necə yoxlanıldı.*
+Final zamanı münsiflər tərəfindən **2 dəyişiklik** elan olundu. Hər ikisi tətbiq edilib:
+
+| № | Tələb | Nə dəyişdirildi | Necə yoxlanıldı |
+|---|---|---|---|
+| 1 | **«Hərəkət məhdudiyyətli / xüsusi qayğıya ehtiyacı olan vətəndaş» rolu (Prioritet SOS).** Bu rolun SOS-u avtomatik **Kritik prioritet (#1)** almalı; sistem ona yalnız **əlil arabası / tibbi nəqliyyat üçün əlçatan (panduslu, maneəsiz)** təxliyə marşrutu verməlidir. | • `domain`: `CitizenRole` (`standard`/`priority`), `SOS.Role`, `SOS.Priority` (1 = kritik, 2 = adi), `Shelter.Accessible`, `Road.Accessible`, `Route.Accessible`, `EvacuationPlan.Accessible`.<br>• `routing`: `Options{Accessible}` — Dijkstra qrafından pilləkənli/maneəli yollar çıxarılır; `Chain` əlçatan sorğularda OSRM-i **keçir** (ictimai OSRM pandus haqqında məlumat vermir).<br>• `service`: `role=priority` SOS → `priority=1` + `sos.priority` SSE hadisəsi; `Plan(accessible)` yalnız əlçatan məntəqələr + əlçatan yollar; briqada təyinatı kritik SOS-a üstünlük verir (store kritikləri əvvəl qaytarır).<br>• `store`: Postgres-də `ALTER TABLE … ADD COLUMN IF NOT EXISTS` ilə `accessible`, `role`, `priority` sütunları (mövcud DB pozulmur); `ListSOS` `priority ASC, created_at DESC`.<br>• `seed`: sığınacaqlar (pilləkən) `accessible=false`, park/stadion `true`; «Nizami küçəsi», «Mikayıl Müşfiq küçəsi» və sığınacaq girişləri `accessible=false`.<br>• API: `POST /sos {"role":"priority"}`, `GET /evacuation/plan?…&role=priority` (və ya `accessible=true`), `POST /citizens/{id}/status {"role"}`.<br>• UI: vətəndaşda ♿ «Hərəkət məhdudiyyəti / xüsusi qayğı» keçidi (cihazda yadda qalır), «♿ Əlçatan marşrut» nişanı, yalnız əlçatan məntəqələr; dispeçerdə kritik SOS **siyahının başında**, qırmızı ♿ marker + 120 m dairə, zonada ♿ sayğac, yollarda ♿/🚫♿ (nöqtəli xətt = pilləkən), «♿ Prioritet SOS» simulyasiya düyməsi. | `go test ./... -race`: `TestAccessibleRouteAvoidsNonAccessibleRoads` (pilləkənli diaqonal keçilmir), `TestPrioritySOSAndAccessiblePlan` (role=priority → priority 1; dispeçer siyahısında birinci; əlçatan planda heç bir sığınacaq yoxdur, bütün marşrutlar `accessible=true`; adi plan məhdudlaşdırılmır). Docker-də canlı: `curl ".../plan?lat=40.387&lng=49.83&role=priority"`. |
+| 2 | **Bütün istifadəçi interfeysi AZ və EN dillərində dinamik dəyişdirilə bilməlidir (i18n).** | Arxitekturada əvvəlcədən mövcud idi: başlıqdakı **AZ / EN** seçicisi səhifəni yenidən yükləmədən dəyişir (`data-i18n` atributları + `/api/v1/i18n/{lang}`), seçim `localStorage`-da saxlanılır; API xəta mesajları `X-Lang` / `Accept-Language` üzrə tərcümə olunur. Yeni modul üçün 16 yeni açar hər iki lüğətə (`internal/i18n/locales/az.json`, `en.json`) əlavə edildi. Yeni dil = 1 JSON fayl. | UI-da AZ↔EN keçidi; `curl -H 'X-Lang: en' .../api/v1/sos -d '{"type":"x"}'` → ingiliscə xəta mesajı. |
 
 ## 8. Layihə strukturu
 
