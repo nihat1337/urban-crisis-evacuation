@@ -15,7 +15,7 @@ function applyTheme() {
   const b = $('#theme');
   if (!b) return;
   const p = themePref();
-  b.textContent = p === 'system' ? '🖥️' : p === 'light' ? '☀️' : '🌙';
+  b.innerHTML = icon(p === 'system' ? 'monitor' : p === 'light' ? 'sun' : 'moon', 17);
   b.title = t(p === 'system' ? 'theme_system' : p === 'light' ? 'theme_light' : 'theme_dark');
 }
 function initTheme() {
@@ -149,6 +149,10 @@ const ICON_PATHS = {
   chat: '<path d="M4 5h16v11H9l-5 4z"/>',
   phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+  monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
+  wifi_off: '<path d="M2 8.5a15 15 0 0 1 4.5-2.8M10 5.1A15 15 0 0 1 22 8.5M5 12a10 10 0 0 1 3.4-2.1M15.6 10A10 10 0 0 1 19 12M8.5 15.5a5 5 0 0 1 7 0"/><path d="M12 19h.01M3 3l18 18"/>',
   logout: '<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4M6 12h10"/>',
 };
 const SHELTER_ICON_NAME = { shelter: 'bunker', park: 'park', stadium: 'stadium', temporary: 'tent' };

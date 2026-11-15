@@ -24,7 +24,7 @@
     <button id="logout" class="btn small ghost" data-i18n-title="logout"><svg class="ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4M6 12h10"/></svg><span data-i18n="logout">Çıxış</span></button>
   </div>
   <span id="live" class="live"><span class="dot"></span><span class="txt">…</span></span>
-  <button id="theme" class="btn small" type="button" aria-label="Theme" style="min-width:38px;justify-content:center">🖥️</button>
+  <button id="theme" class="btn small icon-btn theme-btn" type="button" aria-label="Theme"></button>
   <select id="lang" title="Language" aria-label="Language"></select>
 </header>
 
@@ -84,12 +84,12 @@
       </div>
       <p class="hint" data-i18n="simulate_hint"></p>
       <p class="hint" data-i18n="click_road_hint"></p>
-      <div class="row" style="margin-top:10px;align-items:center">
+      <div class="chaos-block">
         <span class="hint" data-i18n="chaos_title">Xarici API simulyasiyası</span>
         <span class="seg" id="chaos">
-          <button class="btn" data-chaos="off">🟢 <span data-i18n="chaos_normal">Normal</span></button>
-          <button class="btn" data-chaos="503">🔴 <span data-i18n="chaos_503">503 xətası</span></button>
-          <button class="btn" data-chaos="timeout">⏱ <span data-i18n="chaos_timeout">Timeout (5 s)</span></button>
+          <button class="btn" data-chaos="off"><i class="dot" style="--c:var(--green)"></i><span data-i18n="chaos_normal">Normal</span></button>
+          <button class="btn" data-chaos="503"><i class="dot" style="--c:var(--red)"></i><span data-i18n="chaos_503">503 xətası</span></button>
+          <button class="btn" data-chaos="timeout"><i class="dot" style="--c:var(--yellow)"></i><span data-i18n="chaos_timeout">Timeout (5 s)</span></button>
         </span>
       </div>
       <p class="hint" data-i18n="chaos_hint"></p>
@@ -320,7 +320,7 @@
     const rt = ov.routing;
     $$('[data-chaos]').forEach(b => b.classList.toggle('active', (rt.chaos || 'off') === b.dataset.chaos));
     $('#sys').innerHTML = `
-      <dt>${esc(t('routing'))}</dt><dd>${rt.degraded ? '<span class="badge red">📡 ' + esc(t('degraded')) + '</span> ' : '<span class="badge green">' + esc(t('online')) + '</span> '}${rt.provider === 'google' ? '<span class="badge green">Google Routes ✓</span>' : rt.provider === 'osrm' ? '<span class="badge green">OSRM ✓</span>' : '<span class="badge yellow">' + esc(t('routing_simulated')) + '</span>'}${rt.google_configured && !rt.google_available ? ' <span class="badge red">Google ✗</span>' : ''}${rt.breaker_open ? ' <span class="badge orange">breaker open</span>' : ''} · keş ${rt.cache_size}</dd>
+      <dt>${esc(t('routing'))}</dt><dd>${rt.degraded ? '<span class="badge red">' + icon('wifi_off', 12) + ' ' + esc(t('degraded')) + '</span> ' : '<span class="badge green">' + esc(t('online')) + '</span> '}${rt.provider === 'google' ? '<span class="badge green">Google Routes ✓</span>' : rt.provider === 'osrm' ? '<span class="badge green">OSRM ✓</span>' : '<span class="badge yellow">' + esc(t('routing_simulated')) + '</span>'}${rt.google_configured && !rt.google_available ? ' <span class="badge red">Google ✗</span>' : ''}${rt.breaker_open ? ' <span class="badge orange">breaker open</span>' : ''} · keş ${rt.cache_size}</dd>
       ${rt.chaos ? `<dt>Chaos</dt><dd><span class="badge red">${esc(rt.chaos)}</span></dd>` : ''}
       <dt>Xəritə</dt><dd>${map.provider === 'google' ? '<span class="badge green">Google Maps</span>' : '<span class="badge">OpenStreetMap</span>'}</dd>
       <dt>${esc(t('store'))}</dt><dd>${esc(ov.store)}</dd>
