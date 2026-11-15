@@ -1,0 +1,121 @@
+package routing
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/nihat1337/urban-crisis-evacuation/internal/domain"
+)
+
+func p(lat, lng float64) domain.Point { return domain.Point{Lat: lat, Lng: lng} }
+
+// A small square: A-B-C-D with a diagonal shortcut A-C.
+func squareRoads() []domain.Road {
+	a, b, c, d := p(40.400, 49.800), p(40.400, 49.810), p(40.410, 49.810), p(40.410, 49.800)
+	return []domain.Road{
+		{ID: "ab", From: a, To: b, Status: domain.RoadOpen},
+		{ID: "bc", From: b, To: c, Status: domain.RoadOpen},
+		{ID: "cd", From: c, To: d, Status: domain.RoadOpen},
+		{ID: "da", From: d, To: a, Status: domain.RoadOpen},
+		{ID: "ac", From: a, To: c, Status: domain.RoadOpen},
+	}
+}
+
+func TestSimulatedAvoidsBlockedRoad(t *testing.T) {
+	sim := NewSimulated(1.3)
+	a, c := p(40.400, 49.800), p(40.410, 49.810)
+
+	direct, err := sim.Route(context.Background(), a, c, squareRoads())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(direct.Geometry) != 2 {
+		t.Fatalf("expected diagonal shortcut, got %d points", len(direct.Geometry))
+	}
+
+	roads := squareRoads()
+	roads[4].Status = domain.RoadBlocked
+	detour, err := sim.Route(context.Background(), a, c, roads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detour.Detour {
+		t.Fatal("route must be flagged as detour when a road is blocked")
+	}
+	if detour.DistanceM <= direct.DistanceM {
+		t.Fatalf("detour (%.0f m) should be longer than direct (%.0f m)", detour.DistanceM, direct.DistanceM)
+	}
+	if len(detour.Geometry) != 3 {
+		t.Fatalf("expected path via one corner, got %d points", len(detour.Geometry))
+	}
+}
+
+func TestSimulatedEmptyGraphFallsBackToStraightLine(t *testing.T) {
+	r, err := NewSimulated(1.3).Route(context.Background(), p(40.4, 49.8), p(40.41, 49.81), nil)
+	if err != nil || r.Source != "straight" || len(r.Geometry) != 2 {
+		t.Fatalf("unexpected %+v %v", r, err)
+	}
+}
+
+func TestChainFallsBackWhenOSRMDown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	osrm := NewOSRM(srv.URL, "driving", time.Second)
+	ch := NewChain("auto", osrm, NewSimulated(1.3))
+	a, c := p(40.400, 49.800), p(40.410, 49.810)
+
+	for i := 0; i < 3; i++ {
+		r, err := ch.Route(context.Background(), a, c, squareRoads())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Source != "simulated" {
+			t.Fatalf("expected simulated fallback, got %s", r.Source)
+		}
+	}
+	st := ch.Status()
+	if !st.BreakerOpen {
+		t.Fatal("breaker should open after 3 failures")
+	}
+}
+
+func TestChainUsesOSRMWhenHealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"Ok","routes":[{"distance":1500,"duration":1100,"geometry":{"coordinates":[[49.8,40.4],[49.81,40.41]]}}]}`))
+	}))
+	defer srv.Close()
+	ch := NewChain("auto", NewOSRM(srv.URL, "driving", time.Second), NewSimulated(1.3))
+	r, err := ch.Route(context.Background(), p(40.4, 49.8), p(40.41, 49.81), squareRoads())
+	if err != nil || r.Source != "osrm" || r.DistanceM != 1500 || r.Geometry[0].Lat != 40.4 {
+		t.Fatalf("unexpected %+v %v", r, err)
+	}
+}
+
+func TestChainBypassesOSRMWhenCorridorBlocked(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_, _ = w.Write([]byte(`{"code":"Ok","routes":[]}`))
+	}))
+	defer srv.Close()
+	ch := NewChain("auto", NewOSRM(srv.URL, "driving", time.Second), NewSimulated(1.3))
+	roads := squareRoads()
+	roads[4].Status = domain.RoadBlocked // diagonal, sits right on the corridor
+	r, err := ch.Route(context.Background(), p(40.400, 49.800), p(40.410, 49.810), roads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("OSRM must not be called when a blocked road lies on the corridor")
+	}
+	if !r.Detour || r.Source != "simulated" {
+		t.Fatalf("unexpected %+v", r)
+	}
+}

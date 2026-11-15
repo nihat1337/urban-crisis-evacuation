@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="az">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vətəndaş — Şəhər Təhlükəsizlik Şəbəkəsi</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">🆘</span><span data-i18n="app_title">Şəhər Təhlükəsizlik Şəbəkəsi</span></div>
+  <nav>
+    <a href="/" class="active" data-i18n="citizen">Vətəndaş</a>
+    <a href="/dispatcher" data-i18n="dispatcher">Dispeçer</a>
+  </nav>
+  <div class="spacer"></div>
+  <span id="live" class="live"><span class="dot"></span><span class="txt">…</span></span>
+  <select id="lang" title="Language"></select>
+</header>
+
+<main class="layout">
+  <div id="map"></div>
+  <aside class="panel">
+    <section class="card">
+      <h3 data-i18n="your_location">Mövcud yeriniz</h3>
+      <div class="row">
+        <button id="gps" class="btn">📍 <span data-i18n="use_gps">GPS ilə tap</span></button>
+        <select id="zone"><option value="" data-i18n="all_districts">Bütün rayonlar</option></select>
+      </div>
+      <p class="hint" data-i18n="click_map_hint">Yerinizi seçmək üçün xəritəyə klikləyin və ya rayon seçin</p>
+    </section>
+
+    <section class="card">
+      <h3 data-i18n="status_title">Təhlükəsizlik statusum</h3>
+      <div class="status-grid">
+        <button class="btn ok" data-status="safe" data-i18n="status_safe">Təhlükəsizəm</button>
+        <button class="btn" data-status="evacuating" data-i18n="status_evacuating">Təxliyə edirəm</button>
+        <button class="btn warn" data-status="need_help" data-i18n="status_need_help">Köməyə ehtiyacım var</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3 data-i18n="sos_title">SOS siqnalı</h3>
+      <div class="sos-grid">
+        <button class="btn danger" data-sos="fire"><span class="icon">🔥</span><span data-i18n="sos_fire">Yanğın</span></button>
+        <button class="btn danger" data-sos="collapse"><span class="icon">🏚️</span><span data-i18n="sos_collapse">Dağıntı</span></button>
+        <button class="btn danger" data-sos="flood"><span class="icon">🌊</span><span data-i18n="sos_flood">Su basması</span></button>
+        <button class="btn danger" data-sos="medical"><span class="icon">🚑</span><span data-i18n="sos_medical">Tibbi yardım</span></button>
+      </div>
+      <p class="hint" data-i18n="sos_hint">Təhlükə növünü seçin — siqnal bir kliklə göndərilir</p>
+    </section>
+
+    <section class="card">
+      <h3><span data-i18n="nearest_shelters">Ən yaxın toplanış məntəqələri</span><span id="route-src" class="badge"></span></h3>
+      <div id="shelters" class="list"><p class="hint" data-i18n="no_location">Əvvəlcə yerinizi seçin</p></div>
+      <div class="legend" style="margin-top:10px">
+        <span style="--c:#22c55e">&lt;70%</span><span style="--c:#eab308">70–90%</span><span style="--c:#f97316">90–95%</span><span style="--c:#ef4444">&gt;95%</span>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="/static/common.js"></script>
+<script>
+(async function () {
+  const map = makeMap('map');
+  const layers = { shelters: L.layerGroup().addTo(map), routes: L.layerGroup().addTo(map) };
+  let origin = null, originMarker = null, zones = [], plan = null, fitted = false;
+
+  await initI18n();
+
+  // zones → district select
+  try {
+    zones = (await api('/zones')).zones;
+    const sel = $('#zone');
+    zones.forEach(z => { const o = document.createElement('option'); o.value = z.id; o.textContent = z.name; sel.appendChild(o); });
+    sel.onchange = () => { const z = zones.find(x => x.id === sel.value); if (z) setOrigin(z.center, true); };
+  } catch (e) { toast(e.message, 'error'); }
+
+  function setOrigin(p, pan) {
+    origin = { lat: p.lat, lng: p.lng };
+    if (!originMarker) {
+      originMarker = L.marker(origin, { draggable: true, icon: L.divIcon({ className: '', html: '<div class="user-icon"></div>', iconSize: [16, 16], iconAnchor: [8, 8] }) }).addTo(map);
+      originMarker.on('dragend', () => setOrigin(originMarker.getLatLng(), false));
+    } else originMarker.setLatLng(origin);
+    if (pan) map.setView(origin, 14);
+    refresh();
+  }
+
+  map.on('click', e => setOrigin(e.latlng, false));
+  $('#gps').onclick = () => {
+    if (!navigator.geolocation) return toast('GPS yoxdur', 'warn');
+    navigator.geolocation.getCurrentPosition(
+      pos => setOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude }, true),
+      () => toast('GPS xətası — xəritəyə klikləyin', 'warn'));
+  };
+
+  const refresh = debounce(async () => {
+    if (!origin) return;
+    try {
+      plan = await api(`/evacuation/plan?lat=${origin.lat}&lng=${origin.lng}`);
+      render();
+    } catch (e) { toast(e.message, 'error'); }
+  }, 150);
+
+  function render() {
+    layers.shelters.clearLayers(); layers.routes.clearLayers();
+    const list = $('#shelters'); list.innerHTML = '';
+    if (!plan || !plan.recommended) { list.innerHTML = `<p class="hint">${esc(t('full'))}</p>`; return; }
+    const all = [plan.recommended, ...(plan.alternatives || [])];
+    const src = plan.recommended.route?.source;
+    $('#route-src').textContent = src === 'osrm' ? 'OSRM' : src === 'simulated' ? t('routing_simulated') : '';
+    $('#route-src').className = 'badge ' + (src === 'osrm' ? 'green' : 'yellow');
+
+    const bounds = [origin];
+    all.forEach((o, i) => {
+      const sh = o.shelter, pct = o.occupancy_pct, col = pctColor(pct);
+      L.circleMarker([sh.location.lat, sh.location.lng], { radius: i === 0 ? 11 : 8, color: col, fillColor: col, fillOpacity: .85, weight: 2 })
+        .bindPopup(`<b>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)}</b><br>${esc(t('occupancy'))}: ${pct}% (${sh.occupancy}/${sh.capacity})`)
+        .addTo(layers.shelters);
+      if (o.route && o.route.geometry) {
+        const pts = o.route.geometry.map(p => [p.lat, p.lng]);
+        L.polyline(pts, { color: i === 0 ? '#3b82f6' : '#64748b', weight: i === 0 ? 6 : 3, opacity: i === 0 ? .95 : .6, dashArray: i === 0 ? null : '6 8' }).addTo(layers.routes);
+        pts.forEach(p => bounds.push(p));
+      }
+      const item = document.createElement('div');
+      item.className = 'item' + (i === 0 ? ' recommended' : '');
+      const detour = o.route?.detour ? `<span class="badge orange">⚠ ${esc(t('detour'))}</span>` : '';
+      item.innerHTML = `
+        <div class="title"><span>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)}</span>
+          <span class="badge ${i === 0 ? 'blue' : ''}">${esc(i === 0 ? t('recommended') : t('alternative'))}</span></div>
+        <div class="meta">
+          <span>📏 ${o.route ? fmtDist(o.route.distance_m) : fmtDist(o.distance_m)}</span>
+          ${o.route ? `<span>⏱ ${fmtDur(o.route.duration_s)}</span>` : ''}
+          <span>👥 ${pct}%</span> ${detour}
+        </div>
+        ${o.route?.notes ? `<div class="hint">${esc(o.route.notes)}</div>` : ''}
+        <div class="bar"><div style="width:${Math.min(100, pct)}%;background:${col}"></div></div>`;
+      item.onclick = () => map.setView([sh.location.lat, sh.location.lng], 15);
+      list.appendChild(item);
+    });
+    if (!fitted && bounds.length > 1) { map.fitBounds(bounds, { padding: [40, 40] }); fitted = true; }
+  }
+
+  // SOS — one click
+  $$('[data-sos]').forEach(btn => btn.onclick = async () => {
+    if (!origin) return toast(t('no_location'), 'warn');
+    btn.disabled = true;
+    try {
+      const r = await api('/sos', { method: 'POST', body: { citizen_id: citizenId(), type: btn.dataset.sos, lat: origin.lat, lng: origin.lng } });
+      toast(`${SOS_ICON[btn.dataset.sos]} ${t('sos_sent')} · #${r.sos.id}`, 'ok');
+      L.circleMarker(origin, { radius: 14, color: '#ef4444', fillOpacity: .3 }).addTo(layers.routes);
+    } catch (e) { toast(e.message, 'error'); } finally { btn.disabled = false; }
+  });
+
+  // status
+  $$('[data-status]').forEach(btn => btn.onclick = async () => {
+    try {
+      await api(`/citizens/${citizenId()}/status`, { method: 'POST', body: { status: btn.dataset.status, ...(origin || {}) } });
+      $$('[data-status]').forEach(b => b.classList.remove('active')); btn.classList.add('active');
+      toast(t('status_saved'), 'ok');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+
+  // live updates → automatic alternative route
+  connectSSE(ev => {
+    if (ev.type === 'route.invalidated') {
+      const d = ev.data || {};
+      if (d.reason === 'road_blocked') toast(`🚧 ${d.road_name}: ${t('route_updated_road')}`, 'warn', 7000);
+      else if (d.reason === 'shelter_full') toast(`⚠ ${d.shelter_name}: ${t('route_updated_shelter')}`, 'warn', 7000);
+      else if (d.reason === 'shelter_opened') toast(`⛺ ${t('shelter_opened')}: ${d.shelter_name}`, 'ok', 7000);
+      refresh();
+    } else if (ev.type === 'shelter.updated' || ev.type === 'road.updated' || ev.type === 'shelter.created') {
+      refresh();
+    }
+  }, setLive);
+
+  document.addEventListener('langchange', render);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: crisis
+      POSTGRES_PASSWORD: crisis
+      POSTGRES_DB: crisis
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crisis -d crisis"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-compose}
+    image: urban-crisis-evacuation:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://crisis:crisis@db:5432/crisis?sslmode=disable
+      STORE_FALLBACK: "true"
+      DISPATCHER_API_KEY: ${DISPATCHER_API_KEY:-dispatcher-secret}
+      ROUTING_MODE: ${ROUTING_MODE:-auto}
+      OSRM_URL: ${OSRM_URL:-https://router.project-osrm.org}
+      CRISIS_WINDOW: ${CRISIS_WINDOW:-5m}
+      CRISIS_RADIUS_M: ${CRISIS_RADIUS_M:-500}
+      CRISIS_MIN_SIGNALS: ${CRISIS_MIN_SIGNALS:-4}
+      SHELTER_ALERT_PCT: ${SHELTER_ALERT_PCT:-95}
+      SHELTER_WARN_PCT: ${SHELTER_WARN_PCT:-90}
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-20}
+      DEFAULT_LANG: ${DEFAULT_LANG:-az}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    restart: unless-stopped
+
+volumes:
+  dbdata:

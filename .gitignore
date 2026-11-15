@@ -1,0 +1,8 @@
+bin/
+.env
+*.log
+.DS_Store
+coverage.out
+docs/*.pdf
+docs/page-*.jpg
+node_modules/

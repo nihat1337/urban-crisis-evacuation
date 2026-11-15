@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="az">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dispeçer — Şəhər Təhlükəsizlik Şəbəkəsi</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">🚨</span><span data-i18n="app_title">Şəhər Təhlükəsizlik Şəbəkəsi</span></div>
+  <nav>
+    <a href="/" data-i18n="citizen">Vətəndaş</a>
+    <a href="/dispatcher" class="active" data-i18n="dispatcher">Dispeçer</a>
+  </nav>
+  <div class="spacer"></div>
+  <input id="key" type="password" data-i18n-ph="api_key" placeholder="Dispeçer açarı" style="width:170px">
+  <span id="live" class="live"><span class="dot"></span><span class="txt">…</span></span>
+  <select id="lang" title="Language"></select>
+</header>
+
+<main class="layout">
+  <div id="map"></div>
+  <aside class="panel">
+    <section class="card">
+      <h3><span data-i18n="alerts">Həyəcan siqnalları</span><span id="alert-count" class="badge red"></span></h3>
+      <div id="alerts" class="list"></div>
+    </section>
+
+    <section class="card">
+      <h3 data-i18n="zones">Zonalar</h3>
+      <table id="zones"><thead><tr>
+        <th data-i18n="zone">Zona</th><th class="num" data-i18n="open_sos">Açıq SOS</th><th class="num">5 <span data-i18n="min">dəq</span></th><th class="num" data-i18n="occupancy">Doluluq</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="card">
+      <h3 data-i18n="simulate">Simulyasiya</h3>
+      <div class="row">
+        <select id="sim-zone"></select>
+        <button id="sim" class="btn danger small">🧪 <span data-i18n="simulate_cluster">4 SOS göndər (böhran testi)</span></button>
+      </div>
+      <p class="hint" data-i18n="simulate_hint"></p>
+      <p class="hint" data-i18n="click_road_hint"></p>
+    </section>
+
+    <section class="card">
+      <h3 data-i18n="shelters">Toplanış məntəqələri</h3>
+      <div id="shelters" class="list"></div>
+    </section>
+
+    <section class="card">
+      <h3 data-i18n="brigades">Xilasetmə briqadaları</h3>
+      <div id="brigades" class="list"></div>
+    </section>
+
+    <section class="card">
+      <h3><span data-i18n="sos_signals">SOS siqnalları</span><span id="sos-count" class="badge"></span></h3>
+      <div id="sos" class="list"></div>
+    </section>
+
+    <section class="card">
+      <h3 data-i18n="overview">Sistem</h3>
+      <dl class="kv" id="sys"></dl>
+    </section>
+  </aside>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="/static/common.js"></script>
+<script>
+(async function () {
+  const map = makeMap('map');
+  const layers = { roads: L.layerGroup().addTo(map), shelters: L.layerGroup().addTo(map), sos: L.layerGroup().addTo(map), brigades: L.layerGroup().addTo(map), alerts: L.layerGroup().addTo(map) };
+  let ov = null;
+
+  await initI18n();
+  const keyInput = $('#key');
+  keyInput.value = localStorage.getItem('dispatcherKey') || 'dispatcher-secret';
+  localStorage.setItem('dispatcherKey', keyInput.value);
+  keyInput.onchange = () => { localStorage.setItem('dispatcherKey', keyInput.value); load(); };
+
+  const ROAD_COLOR = { open: '#22c55e', congested: '#eab308', blocked: '#ef4444' };
+  const NEXT_ROAD = { open: 'blocked', blocked: 'congested', congested: 'open' };
+  const BR_CLASS = { available: 'green', en_route: 'blue', busy: 'orange' };
+
+  async function load() {
+    try {
+      ov = await api('/dispatch/overview');
+      render();
+    } catch (e) {
+      if (e.status === 401) toast(t('unauthorized'), 'error'); else toast(e.message, 'error');
+    }
+  }
+  const reload = debounce(load, 250);
+
+  function zoneName(id) { return ov?.zones.find(z => z.id === id)?.name || id; }
+
+  function render() {
+    if (!ov) return;
+    // --- alerts
+    const open = ov.alerts.filter(a => !a.executed);
+    $('#alert-count').textContent = open.length || '';
+    const box = $('#alerts'); box.innerHTML = '';
+    if (!ov.alerts.length) box.innerHTML = `<p class="hint">${esc(t('no_alerts'))}</p>`;
+    ov.alerts.slice(0, 12).forEach(a => {
+      const el = document.createElement('div');
+      el.className = 'alert' + (a.executed ? ' done' : '');
+      const actions = a.executed
+        ? `<span class="badge green">✓ ${esc(t('executed'))}: ${esc(t(a.executed_action))}</span>`
+        : a.suggested_actions.map(ac => `<button class="btn small ${ac === 'dispatch_brigade' ? 'danger' : 'warn'}" data-exec="${a.id}" data-action="${ac}">${ac === 'dispatch_brigade' ? '🚒' : '⛺'} ${esc(t(ac))}</button>`).join('');
+      el.innerHTML = `<div class="msg">🔴 ${esc(a.message)}</div>
+        <div class="meta hint">${esc(zoneName(a.zone_id))} · ${timeAgo(a.created_at)}</div>
+        <div class="actions">${actions}</div>`;
+      box.appendChild(el);
+    });
+    $$('[data-exec]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const r = await api(`/dispatch/alerts/${b.dataset.exec}/execute`, { method: 'POST', body: { action: b.dataset.action } });
+        if (r.brigade) toast(`🚒 ${r.brigade.name} → ${zoneName(r.alert.zone_id)}`, 'ok');
+        if (r.shelter) toast(`⛺ ${r.shelter.name}`, 'ok');
+        load();
+      } catch (e) { toast(e.message, 'error'); b.disabled = false; }
+    });
+
+    // --- zones
+    const tb = $('#zones tbody'); tb.innerHTML = '';
+    ov.zones.forEach(z => {
+      const tr = document.createElement('tr');
+      const hot = z.recent_sos >= (ov.crisis.min_signals || 4);
+      tr.innerHTML = `<td>${hot ? '🔴 ' : ''}${esc(z.name)}</td><td class="num">${z.open_sos}</td><td class="num">${z.recent_sos}</td><td class="num" style="color:${pctColor(z.avg_occupancy_pct)}">${z.avg_occupancy_pct}%</td>`;
+      tr.style.cursor = 'pointer'; tr.onclick = () => map.setView([z.center.lat, z.center.lng], 14);
+      tb.appendChild(tr);
+    });
+    const simSel = $('#sim-zone');
+    if (!simSel.options.length) ov.zones.forEach(z => { const o = document.createElement('option'); o.value = z.id; o.textContent = z.name; simSel.appendChild(o); });
+
+    // --- shelters
+    const sl = $('#shelters'); sl.innerHTML = '';
+    ov.shelters.forEach(sh => {
+      const pct = sh.capacity ? Math.round(sh.occupancy / sh.capacity * 1000) / 10 : 100, col = pctColor(pct);
+      const el = document.createElement('div'); el.className = 'item';
+      el.innerHTML = `<div class="title"><span>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)}</span><span class="badge" style="color:${col}">${pct}%</span></div>
+        <div class="meta"><span>${esc(zoneName(sh.zone_id))}</span><span>${sh.occupancy} / ${sh.capacity}</span>${sh.active ? '' : '<span class="badge red">off</span>'}</div>
+        <input type="range" min="0" max="${sh.capacity}" value="${sh.occupancy}" data-shelter="${sh.id}" title="${esc(t('set_occupancy'))}">
+        <div class="bar"><div style="width:${Math.min(100, pct)}%;background:${col}"></div></div>`;
+      sl.appendChild(el);
+    });
+    $$('[data-shelter]').forEach(r => r.onchange = async () => {
+      try {
+        const res = await api(`/dispatch/shelters/${r.dataset.shelter}`, { method: 'PATCH', body: { occupancy: Number(r.value) } });
+        if (res.alert) toast(`🔴 ${res.alert.message}`, 'error', 8000);
+        load();
+      } catch (e) { toast(e.message, 'error'); }
+    });
+
+    // --- brigades
+    const bl = $('#brigades'); bl.innerHTML = '';
+    ov.brigades.forEach(b => {
+      const el = document.createElement('div'); el.className = 'item';
+      el.innerHTML = `<div class="title"><span>🚒 ${esc(b.name)}</span>
+        <select data-brigade="${b.id}" class="badge ${BR_CLASS[b.status]}" style="border:0">
+          ${['available', 'en_route', 'busy'].map(s => `<option value="${s}" ${s === b.status ? 'selected' : ''}>${esc(t('br_' + s))}</option>`).join('')}
+        </select></div>
+        <div class="meta"><span>${esc(zoneName(b.zone_id))}</span>${b.assigned_sos_id ? `<span>SOS #${esc(b.assigned_sos_id)}</span>` : ''}</div>`;
+      bl.appendChild(el);
+    });
+    $$('[data-brigade]').forEach(s => s.onchange = async () => {
+      try { await api(`/dispatch/brigades/${s.dataset.brigade}`, { method: 'PATCH', body: { status: s.value } }); load(); }
+      catch (e) { toast(e.message, 'error'); }
+    });
+
+    // --- sos
+    const openSOS = ov.sos.filter(s => s.status !== 'resolved');
+    $('#sos-count').textContent = openSOS.length;
+    const so = $('#sos'); so.innerHTML = '';
+    ov.sos.slice(0, 40).forEach(s => {
+      const el = document.createElement('div'); el.className = 'item'; if (s.status === 'resolved') el.style.opacity = .5;
+      el.innerHTML = `<div class="title"><span>${SOS_ICON[s.type] || '🆘'} ${esc(t('sos_' + s.type))} <span class="badge">${esc(s.status)}</span></span>
+        ${s.status !== 'resolved' ? `<button class="btn small ok" data-resolve="${s.id}">✓ ${esc(t('resolve'))}</button>` : ''}</div>
+        <div class="meta"><span>${esc(zoneName(s.zone_id))}</span><span>${timeAgo(s.created_at)}</span><span>${esc(s.citizen_id)}</span>${s.brigade_id ? `<span>🚒 ${esc(s.brigade_id)}</span>` : ''}</div>`;
+      el.onclick = (e) => { if (!e.target.dataset.resolve) map.setView([s.location.lat, s.location.lng], 15); };
+      so.appendChild(el);
+    });
+    $$('[data-resolve]').forEach(b => b.onclick = async (e) => {
+      e.stopPropagation();
+      try { await api(`/dispatch/sos/${b.dataset.resolve}/resolve`, { method: 'POST', body: {} }); load(); } catch (err) { toast(err.message, 'error'); }
+    });
+
+    // --- system
+    const rt = ov.routing;
+    $('#sys').innerHTML = `
+      <dt>${esc(t('routing'))}</dt><dd>${rt.mode} · ${rt.osrm_available ? '<span class="badge green">OSRM ✓</span>' : '<span class="badge yellow">' + esc(t('routing_simulated')) + '</span>'}</dd>
+      <dt>${esc(t('store'))}</dt><dd>${esc(ov.store)}</dd>
+      <dt>Böhran qaydası</dt><dd>≥${ov.crisis.min_signals} SOS / ${Math.round(ov.crisis.window / 6e10)} ${esc(t('min'))} / ${ov.crisis.radius_m} m · &gt;${ov.crisis.shelter_alert_pct}%</dd>
+      <dt>${esc(t('citizens'))}</dt><dd>${Object.entries(ov.citizens).map(([k, v]) => `${esc(t('status_' + k))}: ${v}`).join(' · ') || '—'}</dd>
+      ${rt.last_error ? `<dt>OSRM</dt><dd class="hint">${esc(rt.last_error)}</dd>` : ''}`;
+
+    // --- map
+    Object.values(layers).forEach(l => l.clearLayers());
+    ov.roads.forEach(r => {
+      const line = L.polyline([[r.from.lat, r.from.lng], [r.to.lat, r.to.lng]], { color: ROAD_COLOR[r.status], weight: r.status === 'blocked' ? 6 : 4, opacity: .8, dashArray: r.status === 'blocked' ? '8 8' : null });
+      line.bindTooltip(`${esc(r.name)} — ${esc(t('road_' + r.status))}`);
+      line.on('click', async () => {
+        try { await api(`/dispatch/roads/${r.id}`, { method: 'PATCH', body: { status: NEXT_ROAD[r.status] } }); load(); } catch (e) { toast(e.message, 'error'); }
+      });
+      line.addTo(layers.roads);
+    });
+    ov.shelters.forEach(sh => {
+      const pct = sh.capacity ? sh.occupancy / sh.capacity * 100 : 100, col = pctColor(pct);
+      L.circleMarker([sh.location.lat, sh.location.lng], { radius: 9, color: col, fillColor: col, fillOpacity: .85, weight: 2 })
+        .bindPopup(`<b>${SHELTER_ICON[sh.type] || ''} ${esc(sh.name)}</b><br>${pct.toFixed(1)}% (${sh.occupancy}/${sh.capacity})`).addTo(layers.shelters);
+    });
+    ov.sos.filter(s => s.status !== 'resolved').forEach(s => {
+      L.marker([s.location.lat, s.location.lng], { icon: L.divIcon({ className: '', html: `<div class="brigade-icon">${SOS_ICON[s.type] || '🆘'}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
+        .bindPopup(`<b>${esc(t('sos_' + s.type))}</b><br>${esc(s.citizen_id)} · ${timeAgo(s.created_at)}<br>${esc(s.status)}`).addTo(layers.sos);
+    });
+    ov.brigades.forEach(b => {
+      L.marker([b.location.lat, b.location.lng], { icon: L.divIcon({ className: '', html: '<div class="brigade-icon">🚒</div>', iconSize: [24, 24], iconAnchor: [12, 12] }) })
+        .bindPopup(`<b>${esc(b.name)}</b><br>${esc(t('br_' + b.status))}`).addTo(layers.brigades);
+    });
+    open.forEach(a => {
+      L.circle([a.center.lat, a.center.lng], { radius: ov.crisis.radius_m || 500, color: '#ef4444', fillColor: '#ef4444', fillOpacity: .15, weight: 2, dashArray: '6 6' })
+        .bindPopup(`<b>🔴 ${esc(a.kind)}</b><br>${esc(a.message)}`).addTo(layers.alerts);
+    });
+  }
+
+  // simulation: 4 distinct citizens send SOS in the chosen zone
+  $('#sim').onclick = async () => {
+    const z = ov?.zones.find(x => x.id === $('#sim-zone').value); if (!z) return;
+    const types = ['fire', 'collapse', 'flood', 'medical'];
+    for (let i = 0; i < 4; i++) {
+      const lat = z.center.lat + (Math.random() - .5) * 0.004, lng = z.center.lng + (Math.random() - .5) * 0.004;
+      try {
+        const r = await api('/sos', { method: 'POST', body: { citizen_id: 'sim-' + Math.random().toString(36).slice(2, 8), type: types[i], lat, lng } });
+        if (r.alert) toast(`🔴 ${r.alert.message}`, 'error', 9000);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    load();
+  };
+
+  connectSSE(ev => {
+    if (ev.type === 'alert.created') toast(`🔴 ${ev.data.message}`, 'error', 9000);
+    else if (ev.type === 'sos.created') toast(`${SOS_ICON[ev.data.type] || '🆘'} SOS · ${zoneName(ev.data.zone_id)}`, 'warn', 3000);
+    reload();
+  }, setLive);
+
+  document.addEventListener('langchange', render);
+  await load();
+})();
+</script>
+</body>
+</html>
