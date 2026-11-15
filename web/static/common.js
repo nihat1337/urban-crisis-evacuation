@@ -205,30 +205,55 @@ const GOOGLE_NIGHT_STYLE = [
 // the rest of the app — and any Google failure falls back to OSM.
 async function makeMap(id, { light = document.body.classList.contains('light') } = {}) {
   const map = L.map(id, { zoomControl: true }).setView([40.40, 49.86], 12);
+  const osm = () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    className: light ? '' : 'dark-tiles',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  });
   let cfg = {};
   try { cfg = await (await fetch(`${API}/config`)).json(); } catch (_) { /* offline */ }
-  if (cfg.google_maps_key) {
+  // If Google failed recently (quota / auth / network) skip it for 10 minutes so the
+  // user never waits in front of a blank map.
+  let skipGoogle = false;
+  try { skipGoogle = Number(sessionStorage.getItem('gmapsFailedAt') || 0) > Date.now() - 10 * 60 * 1000; } catch (_) { /* ignore */ }
+  if (cfg.google_maps_key && !skipGoogle) {
+    let googleLayer = null, satellite = null, control = null, fellBack = false;
+    const fallbackToOSM = (why) => {
+      if (fellBack) return;
+      fellBack = true;
+      console.warn('Google Maps unavailable (' + why + ') — falling back to OpenStreetMap');
+      try { sessionStorage.setItem('gmapsFailedAt', String(Date.now())); } catch (_) { /* ignore */ }
+      try { if (control) map.removeControl(control); if (googleLayer) map.removeLayer(googleLayer); if (satellite && map.hasLayer(satellite)) map.removeLayer(satellite); } catch (_) { /* ignore */ }
+      osm().addTo(map);
+      map.provider = 'osm';
+      if (typeof toast === 'function') toast('🗺️ Google Maps əlçatan deyil — OpenStreetMap', 'warn', 5000);
+    };
     try {
+      window.gm_authFailure = () => fallbackToOSM('auth');
       const ready = new Promise(res => { window.__gmapsReady = res; });
       await loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(cfg.google_maps_key)}&v=weekly&language=${LANG}&callback=__gmapsReady`);
       await ready;
       await loadScript('https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.1/dist/Leaflet.GoogleMutant.js');
-      const google = L.gridLayer.googleMutant({ type: 'roadmap', styles: light ? [] : GOOGLE_NIGHT_STYLE, maxZoom: 20 });
-      const satellite = L.gridLayer.googleMutant({ type: 'hybrid', maxZoom: 20 });
-      google.addTo(map);
-      L.control.layers({ 'Google': google, 'Google Satellite': satellite }, null, { position: 'bottomleft', collapsed: true }).addTo(map);
+      googleLayer = L.gridLayer.googleMutant({ type: 'roadmap', styles: light ? [] : GOOGLE_NIGHT_STYLE, maxZoom: 20 });
+      satellite = L.gridLayer.googleMutant({ type: 'hybrid', maxZoom: 20 });
+      googleLayer.addTo(map);
+      control = L.control.layers({ 'Google': googleLayer, 'Google Satellite': satellite }, null, { position: 'bottomleft', collapsed: true }).addTo(map);
       map.provider = 'google';
+      // Quota exhaustion ("Maps Demo Key limit reached") renders a blank canvas
+      // without any callback: detect "no tiles after 4 s" and fall back.
+      setTimeout(() => {
+        const tiles = document.querySelectorAll('.leaflet-google-mutant img').length;
+        const blocked = !!document.querySelector('.gm-style .gm-err-container, .leaflet-google-mutant .gm-err-container');
+        if (map.provider === 'google' && (tiles === 0 || blocked)) fallbackToOSM(blocked ? 'error overlay' : 'no tiles / quota');
+      }, 4000);
       return map;
     } catch (e) {
-      console.warn('Google Maps unavailable, falling back to OpenStreetMap:', e.message);
+      fallbackToOSM(e.message);
+      return map;
     }
   }
   // Plain OSM tiles need no API key; the dark look comes from a CSS filter (.dark-tiles).
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    className: light ? '' : 'dark-tiles',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  }).addTo(map);
+  osm().addTo(map);
   map.provider = 'osm';
   return map;
 }
