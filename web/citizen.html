@@ -148,7 +148,6 @@
   }
 
   map.on('click', e => setOrigin(e.latlng, false));
-  if (qs.get('lat') && qs.get('lng')) setOrigin({ lat: +qs.get('lat'), lng: +qs.get('lng') }, true);
   $('#gps').onclick = () => {
     if (!navigator.geolocation) return toast('GPS yoxdur', 'warn');
     navigator.geolocation.getCurrentPosition(
@@ -164,6 +163,8 @@
       render();
     } catch (e) { toast(e.message, 'error'); }
   }, 150);
+  // Deep link from an SMS (/?lat=..&lng=..): must run after `refresh` exists.
+  if (qs.get('lat') && qs.get('lng')) setOrigin({ lat: +qs.get('lat'), lng: +qs.get('lng') }, true);
 
   function render() {
     layers.shelters.clearLayers(); layers.routes.clearLayers();
